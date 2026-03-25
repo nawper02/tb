@@ -178,7 +178,7 @@ class ConsoleApp : public AppBase {
     void progress(const std::string& msg) {
         move(LINES - 3, 0); clrtoeol();
         attron(COLOR_PAIR(CP_YELLOW) | A_DIM);
-        addstr(("  " + msg).c_str());
+        addstr((" " + msg).c_str());
         attroff(COLOR_PAIR(CP_YELLOW) | A_DIM);
         refresh();
     }
@@ -376,8 +376,8 @@ class ConsoleApp : public AppBase {
     // ── Drawing ──────────────────────────────────────────────
 
     int output_lines() const {
-        // header(1) + output(N) + input(1) + hint(1) = LINES - top_y
-        return LINES - top_y - 3;
+        // header(1) + output(N) + status(1) + input(1) + hint(1) = LINES - top_y
+        return LINES - top_y - 4;
     }
 
     void draw_header() {
@@ -444,6 +444,16 @@ class ConsoleApp : public AppBase {
         }
     }
 
+    void draw_status() {
+        if (status_ttl > 0 && !status_msg.empty()) {
+            move(LINES - 3, 0);
+            attron(A_BOLD);
+            addstr((" " + trunc(status_msg, COLS - 2)).c_str());
+            attroff(A_BOLD);
+            --status_ttl;
+        }
+    }
+
     void draw_input() {
         move(LINES - 2, 0); clrtoeol();
         attron(COLOR_PAIR(CP_CYAN) | A_BOLD); addstr("> "); attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
@@ -485,6 +495,7 @@ public:
     void draw() override {
         draw_header();
         draw_output();
+        draw_status();
         draw_input();
         draw_hint();
     }

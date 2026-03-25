@@ -93,14 +93,48 @@ class PasteApp : public AppBase {
         return vis;
     }
 
+    struct NameLayout {
+        std::vector<std::string> lines;
+        int preview_w = 0;
+        std::string preview;
+    };
+
+    static constexpr int PB_PREFIX = 2;
+
+    NameLayout layout_name(int idx) {
+        auto& sn = snippets[idx];
+        bool exp = expanded.count(sn.id);
+        NameLayout nl;
+
+        if (!exp && !sn.content.empty()) {
+            auto pos = sn.content.find('\n');
+            nl.preview = (pos != std::string::npos) ? sn.content.substr(0, pos) : sn.content;
+            int max_pw = (COLS - PB_PREFIX - 3) / 2;
+            nl.preview_w = std::min((int)nl.preview.size(), max_pw);
+            if (nl.preview_w <= 10) { nl.preview_w = 0; nl.preview.clear(); }
+        }
+
+        int sep_w = (nl.preview_w > 0) ? 3 : 0;
+        int text_avail = COLS - PB_PREFIX - nl.preview_w - sep_w;
+        nl.lines = word_wrap(sn.name, std::max(text_avail, 5));
+        return nl;
+    }
+
     int item_height(int idx) {
-        if (!expanded.count(snippets[idx].id)) return 1;
-        // Count content lines
-        auto& c = snippets[idx].content;
-        if (c.empty()) return 2; // name + "(empty)"
-        int lines = 1;
-        for (char ch : c) if (ch == '\n') ++lines;
-        return 1 + lines;
+        auto nl = layout_name(idx);
+        int h = (int)nl.lines.size();
+
+        if (expanded.count(snippets[idx].id)) {
+            auto& c = snippets[idx].content;
+            if (c.empty()) {
+                h += 1;
+            } else {
+                int cl = 1;
+                for (char ch : c) if (ch == '\n') ++cl;
+                h += cl;
+            }
+        }
+        return h;
     }
 
     void clamp_cursor(int count) {
@@ -141,66 +175,60 @@ class PasteApp : public AppBase {
             bool sel = (vi == cursor);
             bool exp = expanded.count(sn.id);
 
+            auto nl = layout_name(idx);
+            std::string first_line = nl.lines.empty() ? "" : nl.lines[0];
+
+            // ── First line ──
             move(y, 0);
             if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
             addch(sel ? '>' : ' ');
+            addch(' ');
+            addstr(first_line.c_str());
 
-            // Name
-            int prefix = 2;
-            int avail = COLS - prefix;
+            // Dashed separator + content preview (like td indicators)
+            if (nl.preview_w > 0) {
+                int text_end_x = PB_PREFIX + (int)first_line.size();
+                int preview_start_x = COLS - nl.preview_w - 1;
+                int dash_count = preview_start_x - text_end_x - 1;
 
-            // Show first line of content inline if not expanded and content exists
-            std::string display_name = sn.name;
-            if (!exp && !sn.content.empty()) {
-                // Get first line of content
-                std::string first;
-                auto nl = sn.content.find('\n');
-                first = (nl != std::string::npos) ? sn.content.substr(0, nl) : sn.content;
-
-                int name_w = (int)display_name.size();
-                int content_avail = avail - name_w - 3; // " | "
-
-                if (content_avail > 10) {
-                    attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-                    addstr(trunc(display_name, avail).c_str());
-
-                    // Dashed separator (selected line only)
-                    if (sel) {
-                        int text_end_x = prefix + (int)display_name.size();
-                        int content_start = COLS - std::min(content_avail, (int)first.size()) - 1;
-                        int dash_count = content_start - text_end_x - 1;
-                        attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-                        if (dash_count > 1) {
-                            attron(COLOR_PAIR(CP_HINT) | A_DIM);
-                            move(y, text_end_x + 1);
-                            for (int d = 0; d < dash_count; ++d) addch('-');
-                            attroff(COLOR_PAIR(CP_HINT) | A_DIM);
-                        }
-                    } else {
-                        attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+                if (sel) {
+                    attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+                    if (dash_count > 1) {
+                        attron(COLOR_PAIR(CP_HINT) | A_DIM);
+                        move(y, text_end_x + 1);
+                        for (int d = 0; d < dash_count; ++d) addch('-');
+                        attroff(COLOR_PAIR(CP_HINT) | A_DIM);
                     }
-
-                    // Content preview (right-aligned)
-                    move(y, COLS - std::min(content_avail, (int)first.size()) - 1);
-                    attron(COLOR_PAIR(CP_HINT) | A_DIM);
-                    addstr(trunc(first, content_avail).c_str());
-                    attroff(COLOR_PAIR(CP_HINT) | A_DIM);
                 } else {
-                    addstr(trunc(display_name, avail).c_str());
+                    attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
                 }
-            } else {
-                addstr(trunc(display_name, avail).c_str());
+
+                move(y, COLS - nl.preview_w - 1);
+                attron(COLOR_PAIR(CP_HINT) | A_DIM);
+                addstr(trunc(nl.preview, nl.preview_w).c_str());
+                attroff(COLOR_PAIR(CP_HINT) | A_DIM);
             }
 
             if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
             ++y;
 
-            // Expanded content
+            // ── Continuation lines (word-wrapped name) ──
+            for (int li = 1; li < (int)nl.lines.size(); ++li) {
+                if (y >= start_y + ch) break;
+                move(y, PB_PREFIX);
+                if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+                addstr(nl.lines[li].c_str());
+                if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+                ++y;
+            }
+
+            // ── Expanded content ──
             if (exp) {
+                int sub_indent = PB_PREFIX + 2;
                 auto& c = sn.content;
                 if (c.empty()) {
                     if (y < start_y + ch) {
-                        move(y, 4);
+                        move(y, sub_indent);
                         attron(A_DIM);
                         addstr("(empty)");
                         attroff(A_DIM);
@@ -210,9 +238,9 @@ class PasteApp : public AppBase {
                     std::istringstream ss(c);
                     std::string line;
                     while (std::getline(ss, line) && y < start_y + ch) {
-                        move(y, 4);
+                        move(y, sub_indent);
                         attron(COLOR_PAIR(CP_HINT));
-                        addstr(trunc(line, COLS - 5).c_str());
+                        addstr(trunc(line, COLS - sub_indent - 1).c_str());
                         attroff(COLOR_PAIR(CP_HINT));
                         ++y;
                     }

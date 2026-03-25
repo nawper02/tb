@@ -10,7 +10,7 @@ pkg_check_modules(NCURSES REQUIRED ncursesw)
 add_executable(tb tb.cpp)
 
 target_include_directories(tb PRIVATE ${NCURSES_INCLUDE_DIRS})
-target_link_libraries(tb PRIVATE ${NCURSES_LIBRARIES})
+target_link_libraries(tb PRIVATE ${NCURSES_LIBRARIES} util)
 
 include(GNUInstallDirs)
 install(TARGETS tb DESTINATION ${CMAKE_INSTALL_BINDIR})
