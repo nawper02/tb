@@ -58,8 +58,8 @@ public:
         // Register apps
         apps.push_back(std::make_unique<TdApp>());
         apps.push_back(std::make_unique<PasteApp>());
-        apps.push_back(std::make_unique<ConsoleApp>());
         apps.push_back(std::make_unique<AeApp>());
+        apps.push_back(std::make_unique<ConsoleApp>());
 
         // Init ncurses
         initscr();
