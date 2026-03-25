@@ -6,35 +6,66 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
+#include <sstream>
 #include <unistd.h>
 
-// ── Console / Sync App ───────────────────────────────────────
+// ── Console App ──────────────────────────────────────────────
 //
-// Encrypts ~/.td.json and ~/.pb.json with AES-256-CBC (via openssl)
-// and stores them at kvdb.io under fixed keys /td and /pb.
+// A command-line interface inside the TUI. Type 'help' to start.
 //
-// Setup (one-time, same account on all machines):
-//   1. Go to https://kvdb.io and create a free bucket → you get a short ID
-//   2. Press 'K' in this app and enter that bucket ID
-//   3. Press 'p' to set an encryption password (session-only, never saved)
-//   4. Press 'u' to push, 'd' to pull
+// Built-in commands: push, pull, status, key, password, clear, help
 //
-// On another machine: enter the same bucket ID + same password. That's it.
+// To add a new command:
+//   1. Write a cmd_foo(args) method
+//   2. Add "else if (cmd == "foo") cmd_foo(args);" in execute()
+//   3. Add a line in cmd_help()
 
 class ConsoleApp : public AppBase {
+
+    // ── Output buffer ────────────────────────────────────────
+
+    enum LineType { L_OUT, L_CMD, L_OK, L_ERR, L_DIM, L_HEAD };
+
+    struct Line {
+        LineType    type = L_OUT;
+        std::string text;
+        std::string ts;   // timestamp, shown right-aligned on CMD lines
+    };
+
+    std::deque<Line>     buf;
+    int                  scroll = 0;   // lines scrolled up from bottom
+    static constexpr int BUFMAX = 2000;
+
+    void emit(const std::string& text, LineType type = L_OUT, bool ts = false) {
+        Line l{ type, text, ts ? format_short(now_iso()) : "" };
+        buf.push_back(l);
+        while ((int)buf.size() > BUFMAX) buf.pop_front();
+        if (scroll > 0) ++scroll; // keep viewport if scrolled up
+    }
+
+    // ── Input ────────────────────────────────────────────────
+
+    std::string              input;
+    int                      input_pos = 0;
+    std::vector<std::string> history;
+    int                      history_idx = -1;
+    std::string              history_saved;
+
+    // ── Sync state ───────────────────────────────────────────
+
     struct SyncEntry {
-        std::string label;      // "td" or "pb"
-        std::string file;       // ~/.td.json etc.
+        std::string label;
+        std::string file;
         std::string last_push;
         std::string last_pull;
     };
 
-    std::string cfg_path;
-    std::string bucket_id;
-    std::string session_pw;
-    std::vector<SyncEntry> entries;
-    int cursor = 0;
+    std::string             cfg_path;
+    std::string             bucket_id;
+    std::string             session_pw;
+    std::vector<SyncEntry>  entries;
 
     // ── Paths ────────────────────────────────────────────────
 
@@ -70,7 +101,7 @@ class ConsoleApp : public AppBase {
         f << json::serialize(json::Value(std::move(o)));
     }
 
-    // ── Shell ────────────────────────────────────────────────
+    // ── Shell utils ──────────────────────────────────────────
 
     static std::string sq(const std::string& s) {
         std::string r = "'";
@@ -81,16 +112,24 @@ class ConsoleApp : public AppBase {
     static std::string run(const std::string& cmd) {
         FILE* p = popen(cmd.c_str(), "r");
         if (!p) return "";
-        std::string out; char buf[4096]; size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), p)) > 0) out.append(buf, n);
+        std::string out; char tmp[4096]; size_t n;
+        while ((n = fread(tmp, 1, sizeof(tmp), p)) > 0) out.append(tmp, n);
         pclose(p);
         return out;
+    }
+
+    static std::vector<std::string> tokenize(const std::string& s) {
+        std::vector<std::string> v;
+        std::istringstream ss(s);
+        std::string t;
+        while (ss >> t) v.push_back(t);
+        return v;
     }
 
     // ── Crypto ───────────────────────────────────────────────
 
     std::string encrypt(const std::string& data) {
-        std::string tmp = "/tmp/.tb_sync_" + std::to_string(getpid());
+        std::string tmp = "/tmp/.tb_enc_" + std::to_string(getpid());
         { std::ofstream f(tmp); f << data; }
         std::string out = run("openssl enc -aes-256-cbc -pbkdf2 -base64 -A"
                               " -in " + sq(tmp) +
@@ -101,7 +140,7 @@ class ConsoleApp : public AppBase {
     }
 
     std::string decrypt(const std::string& data) {
-        std::string tmp = "/tmp/.tb_sync_" + std::to_string(getpid());
+        std::string tmp = "/tmp/.tb_enc_" + std::to_string(getpid());
         { std::ofstream f(tmp); f << data; }
         std::string out = run("openssl enc -d -aes-256-cbc -pbkdf2 -base64 -A"
                               " -in " + sq(tmp) +
@@ -110,148 +149,310 @@ class ConsoleApp : public AppBase {
         return out;
     }
 
-    // ── kvdb.io API ──────────────────────────────────────────
+    // ── kvdb.io ──────────────────────────────────────────────
 
-    // POST https://kvdb.io/{bucket}/{key}  with raw body
     // Returns "" on success, error string on failure
     std::string kv_put(const std::string& key, const std::string& value) {
         std::string url = "https://kvdb.io/" + bucket_id + "/" + key;
         std::string resp = run("curl -s -w '\\n%{http_code}'"
-                               " -X POST " + sq(url) +
-                               " -d " + sq(value));
-        // Last line is the HTTP status code
-        auto sep = resp.rfind('\n');
+                               " -X POST " + sq(url) + " -d " + sq(value));
+        auto sep  = resp.rfind('\n');
         std::string code = (sep != std::string::npos) ? resp.substr(sep + 1) : "";
         if (code == "200" || code == "201") return "";
         return "HTTP " + code + (sep != std::string::npos ? ": " + resp.substr(0, sep) : "");
     }
 
-    // GET https://kvdb.io/{bucket}/{key}  returns raw body or "" on 404/error
+    // Returns value string, or "" on 404/error
     std::string kv_get(const std::string& key) {
         std::string url = "https://kvdb.io/" + bucket_id + "/" + key;
         std::string resp = run("curl -s -w '\\n%{http_code}'"
                                " -X GET " + sq(url));
-        auto sep = resp.rfind('\n');
+        auto sep  = resp.rfind('\n');
         std::string code = (sep != std::string::npos) ? resp.substr(sep + 1) : "";
         if (code == "200") return (sep != std::string::npos) ? resp.substr(0, sep) : resp;
         return "";
     }
 
-    std::string kv_last_error; // set by do_push/do_pull for display
-
-    // ── Sync operations ──────────────────────────────────────
+    // ── Progress display (non-buffered, during blocking ops) ─
 
     void progress(const std::string& msg) {
         move(LINES - 3, 0); clrtoeol();
-        attron(A_BOLD | COLOR_PAIR(CP_YELLOW));
-        addstr((" " + msg).c_str());
-        attroff(A_BOLD | COLOR_PAIR(CP_YELLOW));
+        attron(COLOR_PAIR(CP_YELLOW) | A_DIM);
+        addstr(("  " + msg).c_str());
+        attroff(COLOR_PAIR(CP_YELLOW) | A_DIM);
         refresh();
+    }
+
+    // ── Sync helpers ─────────────────────────────────────────
+
+    SyncEntry* find_entry(const std::string& label) {
+        for (auto& e : entries) if (e.label == label) return &e;
+        return nullptr;
     }
 
     bool do_push(SyncEntry& e) {
         std::ifstream f(e.file);
-        if (!f.is_open()) { flash("Not found: " + e.file); return false; }
+        if (!f.is_open()) {
+            emit("  [" + e.label + "] file not found: " + e.file, L_ERR);
+            return false;
+        }
         std::string data((std::istreambuf_iterator<char>(f)), {});
 
-        progress("Encrypting " + e.label + "...");
+        progress("[" + e.label + "] encrypting...");
         std::string enc = encrypt(data);
-        if (enc.empty()) { flash("Encryption failed (is openssl installed?)"); return false; }
+        if (enc.empty()) { emit("  [" + e.label + "] encryption failed (openssl installed?)", L_ERR); return false; }
 
-        progress("Uploading " + e.label + "...");
+        progress("[" + e.label + "] uploading...");
         std::string err = kv_put(e.label, enc);
-        if (!err.empty()) { flash("Upload failed: " + err); return false; }
+        if (!err.empty()) { emit("  [" + e.label + "] " + err, L_ERR); return false; }
 
         e.last_push = now_iso();
         save_cfg();
+        emit("  [" + e.label + "] pushed  " + format_short(e.last_push), L_OK);
         return true;
     }
 
     bool do_pull(SyncEntry& e) {
-        progress("Downloading " + e.label + "...");
+        progress("[" + e.label + "] downloading...");
         std::string enc = kv_get(e.label);
-        if (enc.empty()) { flash(e.label + ": download failed (not pushed yet, or bad bucket ID)"); return false; }
+        if (enc.empty()) { emit("  [" + e.label + "] not found (push first from another machine)", L_ERR); return false; }
 
-        progress("Decrypting " + e.label + "...");
+        progress("[" + e.label + "] decrypting...");
         std::string data = decrypt(enc);
-        if (data.empty()) { flash("Decrypt failed (wrong password?)"); return false; }
+        if (data.empty()) { emit("  [" + e.label + "] decrypt failed (wrong password?)", L_ERR); return false; }
 
         std::rename(e.file.c_str(), (e.file + ".bak").c_str());
         std::ofstream out(e.file);
-        if (!out) { flash("Cannot write: " + e.file); return false; }
+        if (!out) { emit("  [" + e.label + "] cannot write: " + e.file, L_ERR); return false; }
         out << data;
 
         e.last_pull = now_iso();
         save_cfg();
+        emit("  [" + e.label + "] pulled  " + format_short(e.last_pull), L_OK);
         return true;
     }
 
-    // ── Password input (masked) ──────────────────────────────
+    // ── Masked password prompt ───────────────────────────────
 
     std::string pw_input(const std::string& prompt) {
-        std::string buf;
+        std::string buf2;
         while (true) {
-            move(LINES - 1, 0); clrtoeol();
-            attron(A_BOLD); addstr(prompt.c_str()); attroff(A_BOLD);
-            addstr(std::string(buf.size(), '*').c_str());
-            move(LINES - 1, (int)prompt.size() + (int)buf.size());
+            move(LINES - 2, 0); clrtoeol();
+            attron(COLOR_PAIR(CP_CYAN) | A_BOLD); addstr((prompt + " ").c_str()); attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+            addstr(std::string(buf2.size(), '*').c_str());
+            move(LINES - 2, (int)prompt.size() + 1 + (int)buf2.size());
             curs_set(1); refresh();
             int ch = getch();
             if (ch == ERR) continue;
-            if (ch == '\n' || ch == KEY_ENTER) { curs_set(0); return buf; }
-            if (ch == 27)                      { curs_set(0); return ""; }
-            if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) { if (!buf.empty()) buf.pop_back(); }
-            else if (ch >= 32 && ch < 127) buf += (char)ch;
+            if (ch == '\n' || ch == KEY_ENTER)                     { curs_set(0); return buf2; }
+            if (ch == 27)                                           { curs_set(0); return ""; }
+            if (ch == KEY_BACKSPACE || ch == 127 || ch == 8)       { if (!buf2.empty()) buf2.pop_back(); }
+            else if (ch >= 32 && ch < 127)                         buf2 += (char)ch;
         }
     }
 
+    // ── Commands ─────────────────────────────────────────────
+
+    void cmd_push(const std::vector<std::string>& args) {
+        if (bucket_id.empty()) { emit("  bucket ID not set  ->  run: key <id>", L_ERR); return; }
+        if (session_pw.empty()) { emit("  password not set  ->  run: password", L_ERR); return; }
+
+        std::vector<SyncEntry*> targets;
+        if (args.empty()) {
+            for (auto& e : entries) targets.push_back(&e);
+        } else {
+            for (auto& a : args) {
+                auto* ep = find_entry(a);
+                if (!ep) { emit("  unknown target: " + a, L_ERR); return; }
+                targets.push_back(ep);
+            }
+        }
+
+        int ok = 0;
+        for (auto* ep : targets) if (do_push(*ep)) ++ok;
+        emit("  " + std::to_string(ok) + "/" + std::to_string((int)targets.size()) + " pushed",
+             ok == (int)targets.size() ? L_OK : L_ERR);
+        if (ok > 0) reload_requested = true;
+    }
+
+    void cmd_pull(const std::vector<std::string>& args) {
+        if (bucket_id.empty()) { emit("  bucket ID not set  ->  run: key <id>", L_ERR); return; }
+        if (session_pw.empty()) { emit("  password not set  ->  run: password", L_ERR); return; }
+
+        std::vector<SyncEntry*> targets;
+        if (args.empty()) {
+            for (auto& e : entries) targets.push_back(&e);
+        } else {
+            for (auto& a : args) {
+                auto* ep = find_entry(a);
+                if (!ep) { emit("  unknown target: " + a, L_ERR); return; }
+                targets.push_back(ep);
+            }
+        }
+
+        int ok = 0;
+        for (auto* ep : targets) if (do_pull(*ep)) ++ok;
+        emit("  " + std::to_string(ok) + "/" + std::to_string((int)targets.size()) + " pulled",
+             ok == (int)targets.size() ? L_OK : L_ERR);
+        if (ok > 0) reload_requested = true;
+    }
+
+    void cmd_status() {
+        emit("  bucket   " + (bucket_id.empty() ? "[not set]" : bucket_id));
+        emit("  password " + std::string(session_pw.empty() ? "[not set]" : "[set for session]"));
+        for (auto& e : entries) {
+            std::string ps = e.last_push.empty() ? "never" : format_short(e.last_push);
+            std::string pl = e.last_pull.empty() ? "never" : format_short(e.last_pull);
+            emit("  " + e.label + "       push:" + ps + "  pull:" + pl);
+        }
+    }
+
+    void cmd_key(const std::vector<std::string>& args) {
+        if (args.empty()) { emit("  usage: key <bucket_id>", L_DIM); return; }
+        bucket_id = args[0];
+        save_cfg();
+        emit("  bucket ID saved", L_OK);
+    }
+
+    void cmd_password() {
+        std::string pw = pw_input("new password:");
+        if (pw.empty()) { emit("  cancelled", L_DIM); return; }
+        std::string pw2 = pw_input("confirm:");
+        if (pw != pw2) { emit("  passwords don't match", L_ERR); return; }
+        session_pw = pw;
+        emit("  password set for session", L_OK);
+    }
+
+    void cmd_help() {
+        emit("  commands", L_HEAD);
+        emit("    push [td|pb]      encrypt + upload", L_DIM);
+        emit("    pull [td|pb]      download + decrypt", L_DIM);
+        emit("    status            bucket, password, and last sync times", L_DIM);
+        emit("    key <bucket_id>   set kvdb.io bucket ID", L_DIM);
+        emit("    password          set encryption password (session only)", L_DIM);
+        emit("    clear             clear output", L_DIM);
+        emit("    help              show this", L_DIM);
+    }
+
+    // ── Command execution ────────────────────────────────────
+
+    void execute(const std::string& raw) {
+        std::string trimmed = raw;
+        while (!trimmed.empty() && trimmed.front() == ' ') trimmed.erase(trimmed.begin());
+        while (!trimmed.empty() && trimmed.back()  == ' ') trimmed.pop_back();
+        if (trimmed.empty()) return;
+
+        if (history.empty() || history.back() != trimmed)
+            history.push_back(trimmed);
+        history_idx = -1;
+        history_saved.clear();
+
+        emit("> " + trimmed, L_CMD, true);
+        scroll = 0;
+
+        auto tokens = tokenize(trimmed);
+        const std::string& cmd = tokens[0];
+        std::vector<std::string> args(tokens.begin() + 1, tokens.end());
+
+        if      (cmd == "push")     cmd_push(args);
+        else if (cmd == "pull")     cmd_pull(args);
+        else if (cmd == "status")   cmd_status();
+        else if (cmd == "key")      cmd_key(args);
+        else if (cmd == "password") cmd_password();
+        else if (cmd == "clear")    { buf.clear(); return; }
+        else if (cmd == "help")     cmd_help();
+        else emit("  unknown command: " + cmd + "  (try 'help')", L_ERR);
+
+        emit("");
+    }
+
     // ── Drawing ──────────────────────────────────────────────
+
+    int output_lines() const {
+        // header(1) + output(N) + input(1) + hint(1) = LINES - top_y
+        return LINES - top_y - 3;
+    }
 
     void draw_header() {
         attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
         move(top_y, 0);
         for (int i = 0; i < COLS; ++i) addch(' ');
-        move(top_y, 1); addstr("cn - sync console");
+        move(top_y, 1); addstr("cn");
         attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
     }
 
-    void draw_body() {
-        int y = top_y + 2;
+    void draw_output() {
+        int avail    = output_lines();
+        int start_y  = top_y + 1;
+        int total    = (int)buf.size();
+        int from     = std::max(0, total - avail - scroll);
+        int to       = std::max(0, total - scroll);
 
-        auto badge = [&](bool ok, const char* yes, const char* no) {
-            if (ok) { attron(COLOR_PAIR(CP_DONE));       addstr(yes); attroff(COLOR_PAIR(CP_DONE)); }
-            else    { attron(COLOR_PAIR(CP_PRI_URGENT)); addstr(no);  attroff(COLOR_PAIR(CP_PRI_URGENT)); }
-        };
-
-        move(y, 2); attron(A_DIM); addstr("Bucket ID: "); attroff(A_DIM);
-        badge(!bucket_id.empty(), "[configured]", "[not set - press 'K']");
-        ++y;
-
-        move(y, 2); attron(A_DIM); addstr("Password:  "); attroff(A_DIM);
-        badge(!session_pw.empty(), "[set for session]", "[not set - press 'p']");
-        y += 2;
-
-        for (int i = 0; i < (int)entries.size(); ++i) {
-            auto& e = entries[i];
-            bool sel = (i == cursor);
+        int y = start_y;
+        for (int i = from; i < to && y < start_y + avail; ++i, ++y) {
+            auto& l = buf[i];
             move(y, 0);
-            if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-            addch(sel ? '>' : ' ');
-            addch(' ');
-            attron(A_BOLD); addstr(e.label.c_str()); attroff(A_BOLD);
 
-            std::string ps = e.last_push.empty() ? "never" : format_short(e.last_push);
-            std::string pl = e.last_pull.empty() ? "never" : format_short(e.last_pull);
-            if (COLS > 40) {
-                move(y, 10);
-                attron(A_DIM);
-                addstr(("push:" + ps + "  pull:" + pl).c_str());
-                attroff(A_DIM);
+            switch (l.type) {
+                case L_CMD:
+                    attron(COLOR_PAIR(CP_CYAN) | A_BOLD);
+                    addstr(trunc(l.text, COLS - (int)l.ts.size() - 2).c_str());
+                    attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+                    if (!l.ts.empty() && COLS > 30) {
+                        move(y, COLS - (int)l.ts.size() - 1);
+                        attron(A_DIM); addstr(l.ts.c_str()); attroff(A_DIM);
+                    }
+                    break;
+                case L_OK:
+                    attron(COLOR_PAIR(CP_DONE));
+                    addstr(trunc(l.text, COLS - 1).c_str());
+                    attroff(COLOR_PAIR(CP_DONE));
+                    break;
+                case L_ERR:
+                    attron(COLOR_PAIR(CP_PRI_URGENT));
+                    addstr(trunc(l.text, COLS - 1).c_str());
+                    attroff(COLOR_PAIR(CP_PRI_URGENT));
+                    break;
+                case L_HEAD:
+                    attron(A_BOLD | COLOR_PAIR(CP_SELECTED));
+                    addstr(trunc(l.text, COLS - 1).c_str());
+                    attroff(A_BOLD | COLOR_PAIR(CP_SELECTED));
+                    break;
+                case L_DIM:
+                    attron(A_DIM);
+                    addstr(trunc(l.text, COLS - 1).c_str());
+                    attroff(A_DIM);
+                    break;
+                case L_OUT:
+                    addstr(trunc(l.text, COLS - 1).c_str());
+                    break;
             }
-
-            if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-            ++y;
         }
+
+        if (scroll > 0) {
+            move(start_y, COLS - 10);
+            attron(COLOR_PAIR(CP_YELLOW) | A_DIM);
+            addstr("(scrolled)");
+            attroff(COLOR_PAIR(CP_YELLOW) | A_DIM);
+        }
+    }
+
+    void draw_input() {
+        move(LINES - 2, 0); clrtoeol();
+        attron(COLOR_PAIR(CP_CYAN) | A_BOLD); addstr("> "); attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+        int avail = COLS - 3;
+        int view_start = 0;
+        if (input_pos > avail - 1) view_start = input_pos - avail + 1;
+        addstr(input.substr(view_start, avail).c_str());
+        move(LINES - 2, 2 + input_pos - view_start);
+        curs_set(1);
+    }
+
+    void draw_hint() {
+        move(LINES - 1, 0); clrtoeol();
+        attron(COLOR_PAIR(CP_HINT) | A_DIM);
+        addstr(" PgUp/PgDn:scroll  Up/Down:history  Esc:clear  q:quit (when input empty)");
+        attroff(COLOR_PAIR(CP_HINT) | A_DIM);
     }
 
 public:
@@ -260,88 +461,94 @@ public:
 
     void init() override {
         cfg_path = home(".tb_console.json");
-        entries = {
-            {"td", home(".td.json"), "", ""},
-            {"pb", home(".pb.json"), "", ""},
-        };
+        if (entries.empty()) {
+            entries = {
+                {"td", home(".td.json"), "", ""},
+                {"pb", home(".pb.json"), "", ""},
+            };
+        }
         load_cfg();
+        if (buf.empty()) {
+            emit("tb console", L_HEAD);
+            emit("  type 'help' to see available commands", L_DIM);
+            emit("");
+        }
     }
 
     void draw() override {
         draw_header();
-        draw_body();
-        draw_status_and_hints("u:push-all d:pull-all U:push-sel D:pull-sel K:bucket-id p:password T:test q:quit");
+        draw_output();
+        draw_input();
+        draw_hint();
     }
 
     bool handle(int ch) override {
-        int count = (int)entries.size();
         switch (ch) {
-            case 'j': case KEY_DOWN: if (cursor < count - 1) ++cursor; break;
-            case 'k': case KEY_UP:   if (cursor > 0)         --cursor; break;
 
-            case 'p': {
-                std::string pw = pw_input("Password: ");
-                if (pw.empty()) break;
-                std::string pw2 = pw_input("Confirm:  ");
-                if (pw == pw2) { session_pw = pw; flash("Password set for session"); }
-                else flash("Passwords don't match");
+            case '\n': case KEY_ENTER: {
+                std::string cmd = input;
+                input.clear(); input_pos = 0;
+                execute(cmd);
                 break;
             }
 
-            case 'K': {
-                std::string id = text_input("kvdb.io bucket ID: ", bucket_id);
-                if (!id.empty()) { bucket_id = id; save_cfg(); flash("Bucket ID saved"); }
+            // Editing
+            case KEY_BACKSPACE: case 127: case 8:
+                if (input_pos > 0) input.erase(--input_pos, 1);
+                break;
+            case KEY_DC:
+                if (input_pos < (int)input.size()) input.erase(input_pos, 1);
+                break;
+            case KEY_LEFT:  if (input_pos > 0)               --input_pos; break;
+            case KEY_RIGHT: if (input_pos < (int)input.size()) ++input_pos; break;
+            case KEY_HOME: case 1: input_pos = 0;                    break;
+            case KEY_END:  case 5: input_pos = (int)input.size();    break;
+            case 21: input.clear(); input_pos = 0;                   break; // Ctrl+U
+
+            // History
+            case KEY_UP: {
+                if (history.empty()) break;
+                if (history_idx == -1) { history_saved = input; history_idx = (int)history.size() - 1; }
+                else if (history_idx > 0) --history_idx;
+                input = history[history_idx]; input_pos = (int)input.size();
+                break;
+            }
+            case KEY_DOWN: {
+                if (history_idx == -1) break;
+                if (history_idx < (int)history.size() - 1) { ++history_idx; input = history[history_idx]; }
+                else { history_idx = -1; input = history_saved; }
+                input_pos = (int)input.size();
                 break;
             }
 
-            case 'u': {
-                if (!ready()) break;
-                int ok = 0;
-                for (auto& e : entries) if (do_push(e)) ++ok;
-                if (ok == count) flash("Pushed " + std::to_string(ok) + "/" + std::to_string(count));
+            // Scroll
+            case KEY_PPAGE: {
+                int step = std::max(1, output_lines() / 2);
+                int max_scroll = std::max(0, (int)buf.size() - output_lines());
+                scroll = std::min(scroll + step, max_scroll);
                 break;
             }
-
-            case 'd': {
-                if (!ready()) break;
-                int ok = 0;
-                for (auto& e : entries) if (do_pull(e)) ++ok;
-                if (ok == count) flash("Pulled " + std::to_string(ok) + "/" + std::to_string(count));
+            case KEY_NPAGE:
+                scroll = std::max(0, scroll - std::max(1, output_lines() / 2));
                 break;
-            }
 
-            // Test: POST a small value and show the raw response
-            case 'T': {
-                if (bucket_id.empty()) { flash("Set bucket ID first"); break; }
-                progress("Testing kvdb connection...");
-                std::string url = "https://kvdb.io/" + bucket_id + "/test";
-                std::string resp = run("curl -s -w '\\nHTTP:%{http_code}' -X POST " +
-                                       sq(url) + " -d 'tb-test' 2>&1");
-                flash("kvdb: " + (resp.empty() ? "(no response - is curl installed?)" : resp));
+            // Esc: clear input, or clear screen if already empty
+            case 27:
+                if (!input.empty()) { input.clear(); input_pos = 0; }
+                else { buf.clear(); scroll = 0; }
                 break;
-            }
 
-            case 'U': {
-                if (!ready()) break;
-                if (do_push(entries[cursor])) flash("Pushed " + entries[cursor].label);
+            // q only quits when input line is empty
+            case 'q':
+                if (input.empty()) return false;
+                input.insert(input_pos++, 1, 'q');
                 break;
-            }
 
-            case 'D': {
-                if (!ready()) break;
-                if (do_pull(entries[cursor])) flash("Pulled " + entries[cursor].label);
+            default:
+                if (ch >= 32 && ch < 127)
+                    input.insert(input_pos++, 1, (char)ch);
                 break;
-            }
-
-            case 'q': return false;
         }
-        return true;
-    }
-
-private:
-    bool ready() {
-        if (bucket_id.empty())  { flash("Set bucket ID first (press 'K')"); return false; }
-        if (session_pw.empty()) { flash("Set password first (press 'p')"); return false; }
         return true;
     }
 };

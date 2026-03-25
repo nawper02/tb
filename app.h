@@ -96,6 +96,7 @@ inline std::string clipboard_paste() {
 class AppBase {
 public:
     int top_y = 1;  // First row the app can draw on (below tab bar)
+    bool reload_requested = false;  // Set true to trigger init() on all apps
 
     virtual ~AppBase() = default;
     virtual const char* id() = 0;

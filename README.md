@@ -21,7 +21,7 @@ Switch tabs with `Shift+Left / Shift+Right`.
 
 Syncs `~/.td.json` and `~/.pb.json` encrypted via AES-256-CBC. Requires `openssl` and `curl`.
 
-1. Go to [kvdb.io](https://kvdb.io) and create a free bucket — you get a short ID
+1. Go to [kvdb.io](https://kvdb.io), create a free account, and **verify your email** — then create a bucket and you'll get a short ID
 2. Press `K` in the cn tab and enter that bucket ID (saved to `~/.tb_console.json`)
 3. Press `p` to set an encryption password (session-only, never saved to disk)
 4. Press `u` to push, `d` to pull

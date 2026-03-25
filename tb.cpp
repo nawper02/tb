@@ -99,6 +99,10 @@ public:
 
             // Pass to active app
             if (!apps[active]->handle(ch)) break;
+            if (apps[active]->reload_requested) {
+                apps[active]->reload_requested = false;
+                for (auto& app : apps) app->init();
+            }
         }
 
         endwin();
