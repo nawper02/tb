@@ -107,6 +107,8 @@ class AeApp : public AppBase {
     std::string path;
     int next_id = 1;
     std::vector<Recording> recordings;
+    int send_delay_ms = 10;      // configurable inter-byte delay for new SEND steps
+    bool skip_pauses = false;    // when true, don't record pause steps
 
     enum Mode { LIST, EDIT, HELP };
     Mode mode = LIST;
@@ -150,6 +152,8 @@ class AeApp : public AppBase {
         try {
             auto v = json::parse(content);
             next_id = v.int_or("next_id", 1);
+            send_delay_ms = v.int_or("send_delay_ms", 10);
+            skip_pauses = v.bool_or("skip_pauses", false);
             recordings.clear();
             if (v.has("recordings") && v.at("recordings").is_arr()) {
                 for (auto& rv : v.at("recordings").as_arr()) {
@@ -185,6 +189,8 @@ class AeApp : public AppBase {
     void save() {
         json::Object o;
         o["next_id"] = next_id;
+        o["send_delay_ms"] = send_delay_ms;
+        o["skip_pauses"] = skip_pauses;
         json::Array arr;
         for (auto& rec : recordings) {
             json::Object ro;
@@ -424,21 +430,23 @@ class AeApp : public AppBase {
                     Step s;
                     s.type = ST_SEND;
                     s.data = accum;
-                    s.delay_ms = 20; // gentle inter-byte pacing
+                    s.delay_ms = send_delay_ms;
                     steps.push_back(s);
                     accum.clear();
                 }
-                // Insert pause
-                Step p;
-                p.type = ST_PAUSE;
-                p.delay_ms = (int)(gap / 1000);
-                steps.push_back(p);
+                // Insert pause (unless skip_pauses is on)
+                if (!skip_pauses) {
+                    Step p;
+                    p.type = ST_PAUSE;
+                    p.delay_ms = (int)(gap / 1000);
+                    steps.push_back(p);
+                }
             } else if (i > 0 && gap > COALESCE_US && !accum.empty()) {
                 // Moderate gap: flush current batch as a step
                 Step s;
                 s.type = ST_SEND;
                 s.data = accum;
-                s.delay_ms = 20;
+                s.delay_ms = send_delay_ms;
                 steps.push_back(s);
                 accum.clear();
             }
@@ -451,7 +459,7 @@ class AeApp : public AppBase {
             Step s;
             s.type = ST_SEND;
             s.data = accum;
-            s.delay_ms = 20;
+            s.delay_ms = send_delay_ms;
             steps.push_back(s);
         }
 
@@ -984,6 +992,10 @@ class AeApp : public AppBase {
         bind("v", "Extract parameter from send step");
         bind("Esc/q", "Back to list");
 
+        section("Settings");
+        bind("T", ("Set send delay (currently " + std::to_string(send_delay_ms) + "ms)").c_str());
+        bind("S", (std::string("Toggle skip pauses (currently ") + (skip_pauses ? "ON" : "OFF") + ")").c_str());
+
         section("Navigation");
         bind("j/k", "Move cursor");
         bind("g/G", "Top / bottom");
@@ -1001,7 +1013,7 @@ class AeApp : public AppBase {
         } else if (mode == EDIT) {
             hints = "d:del w:wait s:send P:pause t:timing e:edit J/K:move v:param Esc:back";
         } else {
-            hints = "r:record p:play e:name d:del D:dup E:edit o:expand /:find ?:help q:quit";
+            hints = "r:record p:play e:name d:del D:dup E:edit o:expand T:delay S:pauses /:find ?:help q:quit";
             if (!search.empty()) hints = "Esc:clear " + hints;
         }
         draw_status_and_hints(hints);
@@ -1129,6 +1141,26 @@ class AeApp : public AppBase {
                 break;
             }
 
+            // Configure send delay
+            case 'T': {
+                std::string result = text_input("Send delay ms: ",
+                    std::to_string(send_delay_ms));
+                if (!result.empty()) {
+                    try { send_delay_ms = std::max(0, std::stoi(result)); } catch (...) {}
+                    save();
+                    flash("Send delay: " + std::to_string(send_delay_ms) + "ms");
+                }
+                break;
+            }
+
+            // Toggle skip pauses during recording
+            case 'S': {
+                skip_pauses = !skip_pauses;
+                save();
+                flash(skip_pauses ? "Skip pauses: ON" : "Skip pauses: OFF");
+                break;
+            }
+
             // Search
             case '/': {
                 std::string q = text_input("Search (Esc=cancel): ", search);
@@ -1218,7 +1250,7 @@ class AeApp : public AppBase {
                 Step s;
                 s.type = ST_SEND;
                 s.data = processed;
-                s.delay_ms = 20;
+                s.delay_ms = send_delay_ms;
                 int insert_at = count > 0 ? edit_cursor + 1 : 0;
                 rec.steps.insert(rec.steps.begin() + insert_at, s);
                 edit_cursor = insert_at;

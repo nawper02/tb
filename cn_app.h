@@ -332,13 +332,13 @@ class ConsoleApp : public AppBase {
 
     void cmd_help() {
         emit("  commands", L_HEAD);
-        emit("    push [td|pb]      encrypt + upload", L_DIM);
-        emit("    pull [td|pb]      download + decrypt", L_DIM);
-        emit("    status            bucket, encryption password, and last sync times", L_DIM);
-        emit("    key <bucket_id>   set kvdb.io bucket ID", L_DIM);
-        emit("    password          set encryption password (session only)", L_DIM);
-        emit("    clear             clear output", L_DIM);
-        emit("    help              show this", L_DIM);
+        emit("    push [td|pb|ae|nt]  encrypt + upload", L_DIM);
+        emit("    pull [td|pb|ae|nt]  download + decrypt", L_DIM);
+        emit("    status              bucket, encryption password, and last sync times", L_DIM);
+        emit("    key <bucket_id>     set kvdb.io bucket ID", L_DIM);
+        emit("    password            set encryption password (session only)", L_DIM);
+        emit("    clear               clear output", L_DIM);
+        emit("    help                show this", L_DIM);
     }
 
     // ── Command execution ────────────────────────────────────
@@ -482,6 +482,8 @@ public:
             entries = {
                 {"td", home(".td.json"), "", ""},
                 {"pb", home(".pb.json"), "", ""},
+                {"ae", home(".ae.json"), "", ""},
+                {"nt", home(".nt.json"), "", ""},
             };
         }
         load_cfg();

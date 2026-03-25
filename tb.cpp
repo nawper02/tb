@@ -1,7 +1,8 @@
 #include "td_app.h"
 #include "pb_app.h"
-#include "cn_app.h"
 #include "ae_app.h"
+#include "nt_app.h"
+#include "cn_app.h"
 
 #include <memory>
 #include <vector>
@@ -59,6 +60,7 @@ public:
         apps.push_back(std::make_unique<TdApp>());
         apps.push_back(std::make_unique<PasteApp>());
         apps.push_back(std::make_unique<AeApp>());
+        apps.push_back(std::make_unique<NtApp>());
         apps.push_back(std::make_unique<ConsoleApp>());
 
         // Init ncurses

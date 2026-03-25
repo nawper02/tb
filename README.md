@@ -1,25 +1,27 @@
 # tb — dev toolbox
 
-Terminal app with three tabs: todo list, pastebin, and sync console.
+Terminal app with tabbed tools: todo list, pastebin, automation engine, notes, and sync console.
 
 ## Build & install
 
 ```
-sudo apt install libncurses-dev build-essential cmake
+sudo apt install build-essential cmake pkg-config libncurses-dev xclip curl openssl
 mkdir build && cd build && cmake .. && make && sudo make install
 ```
 
 ## Apps
 
-- **td** — todo list
+- **td** — todo list with priorities, tags, notes, subtasks, folders
 - **pb** — pastebin / snippet manager
+- **ae** — automation engine (record & replay terminal sessions)
+- **nt** — notes with text paragraphs and copyable blocks
 - **cn** — sync console (encrypt & sync td/pb between machines)
 
 Switch tabs with `Shift+Left / Shift+Right`.
 
 ## Sync setup (cn tab)
 
-Syncs `~/.td.json` and `~/.pb.json` encrypted via AES-256-CBC. Requires `openssl` and `curl`.
+Syncs `~/.td.json`, `~/.pb.json`, `~/.ae.json`, and `~/.nt.json` encrypted via AES-256-CBC. Requires `openssl` and `curl`.
 
 1. Go to [kvdb.io](https://kvdb.io), create a free account, and **verify your email** — then create a bucket and you'll get a short ID
 2. Press `K` in the cn tab and enter that bucket ID (saved to `~/.tb_console.json`)
