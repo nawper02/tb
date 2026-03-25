@@ -261,29 +261,35 @@ class NtApp : public AppBase {
                     }
                 } else {
                     for (auto& b : ne.blocks) {
-                        int cp = (b.type == BLK_COPY) ? CP_CYAN : CP_HINT;
-                        std::string prefix = (b.type == BLK_COPY) ? "[copy] " : "";
+                        bool is_copy = (b.type == BLK_COPY);
+                        int cp = is_copy ? CP_CYAN : CP_HINT;
+                        int attr = is_copy ? A_BOLD : A_DIM;
                         std::istringstream ss(b.content);
                         std::string line;
                         bool first = true;
-                        while (std::getline(ss, line) && y < start_y + ch) {
-                            move(y, sub_indent);
-                            attron(COLOR_PAIR(cp) | (b.type == BLK_COPY ? A_BOLD : A_DIM));
-                            if (first && b.type == BLK_COPY) {
-                                addstr(trunc(prefix + line, COLS - sub_indent - 1).c_str());
-                                first = false;
-                            } else {
-                                addstr(trunc(line, COLS - sub_indent - 1).c_str());
+                        if (b.content.empty()) {
+                            if (y < start_y + ch) {
+                                move(y, sub_indent);
+                                attron(COLOR_PAIR(cp) | A_DIM);
+                                addstr(is_copy ? "[copy] (empty)" : "(empty)");
+                                attroff(COLOR_PAIR(cp) | A_DIM);
+                                ++y;
                             }
-                            attroff(COLOR_PAIR(cp) | (b.type == BLK_COPY ? A_BOLD : A_DIM));
-                            ++y;
-                        }
-                        if (b.content.empty() && y < start_y + ch) {
-                            move(y, sub_indent);
-                            attron(COLOR_PAIR(cp) | A_DIM);
-                            addstr(b.type == BLK_COPY ? "[copy] (empty)" : "(empty)");
-                            attroff(COLOR_PAIR(cp) | A_DIM);
-                            ++y;
+                        } else {
+                            while (std::getline(ss, line) && y < start_y + ch) {
+                                move(y, sub_indent);
+                                attron(COLOR_PAIR(cp) | attr);
+                                if (first && is_copy) {
+                                    addstr(trunc("[copy] " + line, COLS - sub_indent - 1).c_str());
+                                    first = false;
+                                } else {
+                                    // continuation: indent to align with content after "[copy] "
+                                    std::string pad = is_copy ? "       " : "";
+                                    addstr(trunc(pad + line, COLS - sub_indent - 1).c_str());
+                                }
+                                attroff(COLOR_PAIR(cp) | attr);
+                                ++y;
+                            }
                         }
                     }
                 }
@@ -311,69 +317,73 @@ class NtApp : public AppBase {
         if (view_cursor >= (int)ne.blocks.size())
             view_cursor = std::max(0, (int)ne.blocks.size() - 1);
 
-        // Compute row offsets per block for scrolling
+        // Compute row offsets per block for scrolling (+1 per block for blank spacer)
         std::vector<int> block_start_row;
         int total_rows = 0;
         for (auto& b : ne.blocks) {
             block_start_row.push_back(total_rows);
-            total_rows += block_lines(b, COLS - 6);
+            total_rows += block_lines(b, COLS - 3) + 1;
         }
 
         // Scroll so current block is visible
         int cur_row = block_start_row[view_cursor];
-        int cur_h = block_lines(ne.blocks[view_cursor], COLS - 6);
+        int cur_h = block_lines(ne.blocks[view_cursor], COLS - 3) + 1;
         if (cur_row < view_scroll) view_scroll = cur_row;
         if (cur_row + cur_h > view_scroll + ch) view_scroll = cur_row + cur_h - ch;
         if (view_scroll < 0) view_scroll = 0;
 
         int y = start_y;
         int row = 0;
+
         for (int bi = 0; bi < (int)ne.blocks.size(); ++bi) {
             auto& b = ne.blocks[bi];
             bool sel = (bi == view_cursor);
-            int bh = block_lines(b, COLS - 6);
+            bool is_copy = (b.type == BLK_COPY);
+            int bh = block_lines(b, COLS - 3) + 1; // +1 blank spacer row
+
+            // Selected: bold (not dim). Unselected copy: cyan bold. Unselected text: hint dim.
+            int cp   = is_copy ? CP_CYAN : CP_HINT;
+            int attr = sel ? A_BOLD : (is_copy ? A_BOLD : A_DIM);
 
             for (int lr = 0; lr < bh; ++lr) {
                 if (row >= view_scroll && y < start_y + ch) {
-                    move(y, 0);
-
-                    // Selection marker on first line
-                    if (lr == 0) {
-                        if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-                        addch(sel ? '>' : ' ');
-                        addch(' ');
+                    if (lr == bh - 1) {
+                        // blank spacer line
+                        ++y;
                     } else {
-                        addstr("  ");
+                        move(y, 0);
+
+                        // Selector column: '>' in block's own color, not blue
+                        if (lr == 0) {
+                            attron(COLOR_PAIR(cp) | A_BOLD);
+                            addstr(sel ? "> " : "  ");
+                            attroff(COLOR_PAIR(cp) | A_BOLD);
+                        } else {
+                            addstr("  ");
+                        }
+
+                        // Get the lr-th content line
+                        std::string line;
+                        if (b.content.empty()) {
+                            line = "(empty)";
+                        } else {
+                            std::istringstream ss(b.content);
+                            for (int skip = 0; skip <= lr; ++skip)
+                                if (!std::getline(ss, line)) line.clear();
+                        }
+
+                        attron(COLOR_PAIR(cp) | attr);
+                        if (lr == 0 && is_copy) {
+                            addstr(trunc("[copy] " + line, COLS - 3).c_str());
+                        } else if (is_copy) {
+                            addstr(trunc("       " + line, COLS - 3).c_str());
+                        } else {
+                            addstr(trunc(line, COLS - 3).c_str());
+                        }
+                        attroff(COLOR_PAIR(cp) | attr);
+
+                        ++y;
                     }
-
-                    // Type indicator on first line
-                    if (lr == 0 && b.type == BLK_COPY) {
-                        int badge_cp = sel ? CP_SELECTED : CP_CYAN;
-                        attron(COLOR_PAIR(badge_cp) | A_BOLD);
-                        addstr("[copy] ");
-                        attroff(COLOR_PAIR(badge_cp) | A_BOLD);
-                    } else if (lr == 0 && b.type == BLK_TEXT) {
-                        addstr("  ");
-                    } else {
-                        // continuation lines: indent to match
-                        addstr(b.type == BLK_COPY ? "       " : "  ");
-                    }
-
-                    // Get the lr-th line of content
-                    std::istringstream ss(b.content);
-                    std::string line;
-                    for (int skip = 0; skip <= lr; ++skip)
-                        if (!std::getline(ss, line)) line.clear();
-
-                    int indent = 2 + (b.type == BLK_COPY ? 7 : 2);
-                    int cp = sel ? CP_SELECTED :
-                             (b.type == BLK_COPY ? CP_CYAN : CP_HINT);
-                    if (!sel) attron(COLOR_PAIR(cp));
-                    addstr(trunc(line, COLS - indent - 1).c_str());
-                    if (!sel) attroff(COLOR_PAIR(cp));
-                    if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-
-                    ++y;
                 }
                 ++row;
             }
@@ -421,11 +431,11 @@ class NtApp : public AppBase {
         section("View Mode (Enter)");
         bind("t", "Add text block (paragraph)");
         bind("c", "Add copyable block (snippet)");
-        bind("y/Enter", "Copy selected block to clipboard");
+        bind("Enter", "Copy selected copyable block to clipboard");
         bind("e", "Edit block content");
         bind("d", "Delete block");
         bind("T", "Toggle block type (text/copy)");
-        bind("J/K", "Move block down/up");
+        bind("Shift+↑/↓", "Move block up/down");
         bind("Esc/q", "Back to list");
 
         section("Navigation");
@@ -443,7 +453,7 @@ class NtApp : public AppBase {
         if (mode == HELP) {
             hints = "q/?:back";
         } else if (mode == VIEW) {
-            hints = "t:text c:copy y:clip e:edit d:del T:toggle J/K:move Esc:back";
+            hints = "t:text c:copy Enter:copy e:edit d:del T:toggle S+↑↓:move Esc:back";
         } else {
             hints = "a:add Enter:view e:title d:del o:expand /:find ?:help q:quit";
             if (!search.empty()) hints = "Esc:clear " + hints;
@@ -471,31 +481,163 @@ class NtApp : public AppBase {
         }
     }
 
-    // ── Multi-line text input ───────────────────────────────
-    // Uses the single-line text_input but with \n as paragraph separator.
-    // For simplicity, content is entered/edited as a single line with
-    // literal \n sequences that become newlines.
+    // ── Mini text editor ────────────────────────────────────
+    // Modal panel editor. Returns {confirmed, text}.
+    // confirmed=false means user cancelled (Esc).
 
-    std::string multiline_input(const std::string& prompt, const std::string& initial = "") {
-        // Convert newlines to \\n for editing
-        std::string escaped;
-        for (char c : initial) {
-            if (c == '\n') escaped += "\\n";
-            else escaped += c;
+    std::pair<bool, std::string> text_editor(const std::string& title,
+                                              const std::string& initial = "") {
+        // Split initial text into lines
+        std::vector<std::string> lines;
+        {
+            std::istringstream ss(initial);
+            std::string ln;
+            while (std::getline(ss, ln)) lines.push_back(ln);
+            if (lines.empty()) lines.push_back("");
         }
-        std::string result = text_input(prompt, escaped);
-        if (result.empty()) return "";
-        // Process \\n back to newlines
-        std::string processed;
-        for (size_t i = 0; i < result.size(); ++i) {
-            if (result[i] == '\\' && i + 1 < result.size() && result[i + 1] == 'n') {
-                processed += '\n';
-                ++i;
-            } else {
-                processed += result[i];
+
+        int cur_row = (int)lines.size() - 1;
+        int cur_col = (int)lines[cur_row].size();
+        int scroll_y = 0;
+
+        curs_set(1);
+        while (true) {
+            erase();
+            int ph = std::max(6, LINES - 4);   // panel height
+            int pw = std::max(20, COLS - 4);    // panel width
+            int py = (LINES - ph) / 2;          // panel top
+            int px = (COLS - pw) / 2;           // panel left
+            int edit_h = ph - 3;                // editable rows (below title, above hint+border)
+            int content_w = pw - 2;             // usable width inside borders
+
+            // Scroll to keep cursor visible
+            if (cur_row < scroll_y) scroll_y = cur_row;
+            if (cur_row >= scroll_y + edit_h) scroll_y = cur_row - edit_h + 1;
+
+            // Background fill + vertical borders
+            for (int r = py + 1; r < py + ph - 1; ++r) {
+                move(r, px);
+                attron(A_BOLD); addch(ACS_VLINE); attroff(A_BOLD);
+                for (int c = 1; c < pw - 1; ++c) addch(' ');
+                attron(A_BOLD); addch(ACS_VLINE); attroff(A_BOLD);
+            }
+
+            // Top border + title
+            move(py, px);
+            attron(A_BOLD);
+            addch(ACS_ULCORNER);
+            std::string ttl = " " + title + " ";
+            int ttl_w = std::min((int)ttl.size(), pw - 2);
+            addstr(ttl.substr(0, ttl_w).c_str());
+            for (int c = px + 1 + ttl_w; c < px + pw - 1; ++c) addch(ACS_HLINE);
+            addch(ACS_URCORNER);
+            attroff(A_BOLD);
+
+            // Bottom border
+            move(py + ph - 1, px);
+            attron(A_BOLD);
+            addch(ACS_LLCORNER);
+            for (int c = 0; c < pw - 2; ++c) addch(ACS_HLINE);
+            addch(ACS_LRCORNER);
+            attroff(A_BOLD);
+
+            // Hint line (row above bottom border)
+            move(py + ph - 2, px + 1);
+            attron(A_DIM);
+            addstr(trunc("Ctrl+S:save  Ctrl+V:paste  Esc:cancel", content_w).c_str());
+            attroff(A_DIM);
+
+            // Horizontal scroll offset for current line
+            int hscroll = 0;
+            if (cur_col > content_w - 1) hscroll = cur_col - content_w + 1;
+
+            // Text content
+            for (int r = 0; r < edit_h; ++r) {
+                int li = scroll_y + r;
+                move(py + 1 + r, px + 1);
+                if (li < (int)lines.size()) {
+                    int hs = (li == cur_row) ? hscroll : 0;
+                    std::string disp = lines[li].substr(hs);
+                    addstr(trunc(disp, content_w).c_str());
+                }
+            }
+
+            // Terminal cursor position
+            move(py + 1 + (cur_row - scroll_y), px + 1 + (cur_col - hscroll));
+            refresh();
+
+            int ch = getch();
+            if (ch == ERR) continue;
+
+            if (ch == 19) { // Ctrl+S — save
+                curs_set(0);
+                std::string result;
+                for (int i = 0; i < (int)lines.size(); ++i) {
+                    if (i) result += '\n';
+                    result += lines[i];
+                }
+                return {true, result};
+            }
+            if (ch == 27) { // Esc — cancel
+                curs_set(0);
+                return {false, ""};
+            }
+            if (ch == 22) { // Ctrl+V — paste from clipboard
+                std::string clip = clipboard_paste();
+                for (char c : clip) {
+                    if (c == '\n') {
+                        std::string tail = lines[cur_row].substr(cur_col);
+                        lines[cur_row] = lines[cur_row].substr(0, cur_col);
+                        lines.insert(lines.begin() + cur_row + 1, tail);
+                        ++cur_row; cur_col = 0;
+                    } else if (c >= 32 && c < 127) {
+                        lines[cur_row].insert(cur_col++, 1, c);
+                    }
+                }
+            } else if (ch == '\n' || ch == KEY_ENTER) {
+                std::string tail = lines[cur_row].substr(cur_col);
+                lines[cur_row] = lines[cur_row].substr(0, cur_col);
+                lines.insert(lines.begin() + cur_row + 1, tail);
+                ++cur_row; cur_col = 0;
+            } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
+                if (cur_col > 0) {
+                    lines[cur_row].erase(--cur_col, 1);
+                } else if (cur_row > 0) {
+                    cur_col = (int)lines[cur_row - 1].size();
+                    lines[cur_row - 1] += lines[cur_row];
+                    lines.erase(lines.begin() + cur_row--);
+                }
+            } else if (ch == KEY_DC) {
+                if (cur_col < (int)lines[cur_row].size()) {
+                    lines[cur_row].erase(cur_col, 1);
+                } else if (cur_row < (int)lines.size() - 1) {
+                    lines[cur_row] += lines[cur_row + 1];
+                    lines.erase(lines.begin() + cur_row + 1);
+                }
+            } else if (ch == KEY_UP) {
+                if (cur_row > 0) {
+                    --cur_row;
+                    cur_col = std::min(cur_col, (int)lines[cur_row].size());
+                }
+            } else if (ch == KEY_DOWN) {
+                if (cur_row < (int)lines.size() - 1) {
+                    ++cur_row;
+                    cur_col = std::min(cur_col, (int)lines[cur_row].size());
+                }
+            } else if (ch == KEY_LEFT) {
+                if (cur_col > 0) --cur_col;
+                else if (cur_row > 0) { --cur_row; cur_col = (int)lines[cur_row].size(); }
+            } else if (ch == KEY_RIGHT) {
+                if (cur_col < (int)lines[cur_row].size()) ++cur_col;
+                else if (cur_row < (int)lines.size() - 1) { ++cur_row; cur_col = 0; }
+            } else if (ch == KEY_HOME || ch == 1) {
+                cur_col = 0;
+            } else if (ch == KEY_END || ch == 5) {
+                cur_col = (int)lines[cur_row].size();
+            } else if (ch >= 32 && ch < 127) {
+                lines[cur_row].insert(cur_col++, 1, (char)ch);
             }
         }
-        return processed;
     }
 
     // ── Handle: list mode ───────────────────────────────────
@@ -628,8 +770,8 @@ class NtApp : public AppBase {
 
             // Add text block
             case 't': {
-                std::string content = multiline_input("Text (\\n=newline): ");
-                if (content.empty()) break;
+                auto [ok, content] = text_editor("Text block");
+                if (!ok) break;
                 Block b;
                 b.type = BLK_TEXT;
                 b.content = content;
@@ -643,8 +785,8 @@ class NtApp : public AppBase {
 
             // Add copyable block
             case 'c': {
-                std::string content = multiline_input("Copyable (\\n=newline): ");
-                if (content.empty()) break;
+                auto [ok, content] = text_editor("Copyable block");
+                if (!ok) break;
                 Block b;
                 b.type = BLK_COPY;
                 b.content = content;
@@ -672,10 +814,11 @@ class NtApp : public AppBase {
                 break;
             }
 
-            // Copy to clipboard
-            case 'y': case '\n': case KEY_ENTER: {
+            // Copy copyable block to clipboard
+            case '\n': case KEY_ENTER: {
                 if (count == 0) break;
                 auto& b = ne.blocks[view_cursor];
+                if (b.type != BLK_COPY) break;
                 if (b.content.empty()) { flash("No content to copy"); break; }
                 if (clipboard_copy(b.content))
                     flash("Copied to clipboard");
@@ -688,9 +831,9 @@ class NtApp : public AppBase {
             case 'e': {
                 if (count == 0) break;
                 auto& b = ne.blocks[view_cursor];
-                std::string result = multiline_input(
-                    b.type == BLK_COPY ? "Copyable: " : "Text: ", b.content);
-                if (result.empty() && !confirm("Clear content?")) break;
+                auto [ok, result] = text_editor(
+                    b.type == BLK_COPY ? "Edit Copyable" : "Edit Text", b.content);
+                if (!ok) break;
                 b.content = result;
                 save();
                 flash("Updated");
@@ -719,7 +862,7 @@ class NtApp : public AppBase {
             }
 
             // Move block down
-            case 'J': {
+            case KEY_SF: {
                 if (view_cursor < count - 1) {
                     std::swap(ne.blocks[view_cursor], ne.blocks[view_cursor + 1]);
                     ++view_cursor;
@@ -729,7 +872,7 @@ class NtApp : public AppBase {
             }
 
             // Move block up
-            case 'K': {
+            case KEY_SR: {
                 if (view_cursor > 0) {
                     std::swap(ne.blocks[view_cursor], ne.blocks[view_cursor - 1]);
                     --view_cursor;

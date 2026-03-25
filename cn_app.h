@@ -332,8 +332,8 @@ class ConsoleApp : public AppBase {
 
     void cmd_help() {
         emit("  commands", L_HEAD);
-        emit("    push [td|pb|ae|nt]  encrypt + upload", L_DIM);
-        emit("    pull [td|pb|ae|nt]  download + decrypt", L_DIM);
+        emit("    push [td|ae|nt]  encrypt + upload", L_DIM);
+        emit("    pull [td|ae|nt]  download + decrypt", L_DIM);
         emit("    status              bucket, encryption password, and last sync times", L_DIM);
         emit("    key <bucket_id>     set kvdb.io bucket ID", L_DIM);
         emit("    password            set encryption password (session only)", L_DIM);
@@ -481,17 +481,12 @@ public:
         if (entries.empty()) {
             entries = {
                 {"td", home(".td.json"), "", ""},
-                {"pb", home(".pb.json"), "", ""},
                 {"ae", home(".ae.json"), "", ""},
                 {"nt", home(".nt.json"), "", ""},
             };
         }
         load_cfg();
-        if (buf.empty()) {
-            emit("tb console", L_HEAD);
-            emit("  type 'help' to see available commands", L_DIM);
-            emit("");
-        }
+        (void)buf; // no startup messages
     }
 
     void draw() override {
