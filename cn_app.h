@@ -112,23 +112,32 @@ class ConsoleApp : public AppBase {
 
     // ── kvdb.io API ──────────────────────────────────────────
 
-    // PUT https://kvdb.io/{bucket}/{key}  with raw body
-    bool kv_put(const std::string& key, const std::string& value) {
+    // POST https://kvdb.io/{bucket}/{key}  with raw body
+    // Returns "" on success, error string on failure
+    std::string kv_put(const std::string& key, const std::string& value) {
         std::string url = "https://kvdb.io/" + bucket_id + "/" + key;
-        std::string resp = run("curl -s -o /dev/null -w '%{http_code}'"
-                               " -X PUT " + sq(url) +
+        std::string resp = run("curl -s -w '\\n%{http_code}'"
+                               " -X POST " + sq(url) +
                                " -d " + sq(value));
-        // kvdb returns 200 on success
-        return resp.find("200") != std::string::npos;
+        // Last line is the HTTP status code
+        auto sep = resp.rfind('\n');
+        std::string code = (sep != std::string::npos) ? resp.substr(sep + 1) : "";
+        if (code == "200" || code == "201") return "";
+        return "HTTP " + code + (sep != std::string::npos ? ": " + resp.substr(0, sep) : "");
     }
 
     // GET https://kvdb.io/{bucket}/{key}  returns raw body or "" on 404/error
     std::string kv_get(const std::string& key) {
         std::string url = "https://kvdb.io/" + bucket_id + "/" + key;
-        // Use -f so curl returns empty + non-zero exit on 4xx/5xx
-        std::string resp = run("curl -sf " + sq(url) + " 2>/dev/null");
-        return resp;
+        std::string resp = run("curl -s -w '\\n%{http_code}'"
+                               " -X GET " + sq(url));
+        auto sep = resp.rfind('\n');
+        std::string code = (sep != std::string::npos) ? resp.substr(sep + 1) : "";
+        if (code == "200") return (sep != std::string::npos) ? resp.substr(0, sep) : resp;
+        return "";
     }
+
+    std::string kv_last_error; // set by do_push/do_pull for display
 
     // ── Sync operations ──────────────────────────────────────
 
@@ -150,7 +159,8 @@ class ConsoleApp : public AppBase {
         if (enc.empty()) { flash("Encryption failed (is openssl installed?)"); return false; }
 
         progress("Uploading " + e.label + "...");
-        if (!kv_put(e.label, enc)) { flash("Upload failed - check bucket ID / network"); return false; }
+        std::string err = kv_put(e.label, enc);
+        if (!err.empty()) { flash("Upload failed: " + err); return false; }
 
         e.last_push = now_iso();
         save_cfg();
@@ -160,7 +170,7 @@ class ConsoleApp : public AppBase {
     bool do_pull(SyncEntry& e) {
         progress("Downloading " + e.label + "...");
         std::string enc = kv_get(e.label);
-        if (enc.empty()) { flash(e.label + ": not found - push from another machine first"); return false; }
+        if (enc.empty()) { flash(e.label + ": download failed (not pushed yet, or bad bucket ID)"); return false; }
 
         progress("Decrypting " + e.label + "...");
         std::string data = decrypt(enc);
