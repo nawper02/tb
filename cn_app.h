@@ -270,7 +270,7 @@ public:
     void draw() override {
         draw_header();
         draw_body();
-        draw_status_and_hints("u:push-all d:pull-all U:push-sel D:pull-sel K:bucket-id p:password q:quit");
+        draw_status_and_hints("u:push-all d:pull-all U:push-sel D:pull-sel K:bucket-id p:password T:test q:quit");
     }
 
     bool handle(int ch) override {
@@ -298,7 +298,7 @@ public:
                 if (!ready()) break;
                 int ok = 0;
                 for (auto& e : entries) if (do_push(e)) ++ok;
-                flash("Pushed " + std::to_string(ok) + "/" + std::to_string(count));
+                if (ok == count) flash("Pushed " + std::to_string(ok) + "/" + std::to_string(count));
                 break;
             }
 
@@ -306,7 +306,18 @@ public:
                 if (!ready()) break;
                 int ok = 0;
                 for (auto& e : entries) if (do_pull(e)) ++ok;
-                flash("Pulled " + std::to_string(ok) + "/" + std::to_string(count));
+                if (ok == count) flash("Pulled " + std::to_string(ok) + "/" + std::to_string(count));
+                break;
+            }
+
+            // Test: POST a small value and show the raw response
+            case 'T': {
+                if (bucket_id.empty()) { flash("Set bucket ID first"); break; }
+                progress("Testing kvdb connection...");
+                std::string url = "https://kvdb.io/" + bucket_id + "/test";
+                std::string resp = run("curl -s -w '\\nHTTP:%{http_code}' -X POST " +
+                                       sq(url) + " -d 'tb-test' 2>&1");
+                flash("kvdb: " + (resp.empty() ? "(no response - is curl installed?)" : resp));
                 break;
             }
 
