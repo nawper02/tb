@@ -1,20 +1,37 @@
-# td
+# tb — dev toolbox
 
-## Build/install
-```
+Terminal app with three tabs: todo list, pastebin, and sync console.
+
+## Build & install
+
 ```
 sudo apt install libncurses-dev build-essential cmake
-mkdur build && cd build && cmake .. && make && sudo make install
+mkdir build && cd build && cmake .. && make && sudo make install
+```
 
-## First time setup
-1. Create a free account at https://jsonbin.io and copy your Master Key from the dashboard
-2. In the cn tab, press K to enter the key (saved to ~/.tb_console.json)
-3. Press p to set an encryption password (held in memory only, never saved)
+## Apps
 
-Syncing:
-- u — encrypt + push both td and pb to jsonbin
-- d — pull both down + decrypt (backs up existing files to .bak)
-- U / D — push/pull just the selected entry
-- j/k — move between entries
+- **td** — todo list
+- **pb** — pastebin / snippet manager
+- **cn** — sync console (encrypt & sync td/pb between machines)
 
-Between machines: copy ~/.tb_console.json to the other machine — it contains the bin IDs so both machines point to the same bins. The API key is also in there so you only need to re-enter the session password.
+Switch tabs with `Shift+Left / Shift+Right`.
+
+## Sync setup (cn tab)
+
+Syncs `~/.td.json` and `~/.pb.json` encrypted via AES-256-CBC. Requires `openssl` and `curl`.
+
+1. Go to [kvdb.io](https://kvdb.io) and create a free bucket — you get a short ID
+2. Press `K` in the cn tab and enter that bucket ID (saved to `~/.tb_console.json`)
+3. Press `p` to set an encryption password (session-only, never saved to disk)
+4. Press `u` to push, `d` to pull
+
+On any other machine: enter the **same bucket ID** and **same password** — that's all. Nothing to copy between machines.
+
+| Key | Action |
+|-----|--------|
+| `u` | Encrypt + push all |
+| `d` | Pull + decrypt all |
+| `U` / `D` | Push / pull selected entry |
+| `K` | Set bucket ID |
+| `p` | Set encryption password |

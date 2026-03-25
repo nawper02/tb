@@ -150,7 +150,7 @@ class ConsoleApp : public AppBase {
         if (enc.empty()) { flash("Encryption failed (is openssl installed?)"); return false; }
 
         progress("Uploading " + e.label + "...");
-        if (!kv_put(e.label, enc)) { flash("Upload failed — check bucket ID / network"); return false; }
+        if (!kv_put(e.label, enc)) { flash("Upload failed - check bucket ID / network"); return false; }
 
         e.last_push = now_iso();
         save_cfg();
@@ -160,7 +160,7 @@ class ConsoleApp : public AppBase {
     bool do_pull(SyncEntry& e) {
         progress("Downloading " + e.label + "...");
         std::string enc = kv_get(e.label);
-        if (enc.empty()) { flash(e.label + ": not found — push from another machine first"); return false; }
+        if (enc.empty()) { flash(e.label + ": not found - push from another machine first"); return false; }
 
         progress("Decrypting " + e.label + "...");
         std::string data = decrypt(enc);
@@ -214,11 +214,11 @@ class ConsoleApp : public AppBase {
         };
 
         move(y, 2); attron(A_DIM); addstr("Bucket ID: "); attroff(A_DIM);
-        badge(!bucket_id.empty(), "[configured]", "[not set — press 'K']");
+        badge(!bucket_id.empty(), "[configured]", "[not set - press 'K']");
         ++y;
 
         move(y, 2); attron(A_DIM); addstr("Password:  "); attroff(A_DIM);
-        badge(!session_pw.empty(), "[set for session]", "[not set — press 'p']");
+        badge(!session_pw.empty(), "[set for session]", "[not set - press 'p']");
         y += 2;
 
         for (int i = 0; i < (int)entries.size(); ++i) {
