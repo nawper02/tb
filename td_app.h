@@ -1,89 +1,22 @@
+#pragma once
+
+#include "app.h"
 #include "json.h"
 #include "model.h"
 
-#include <ncurses.h>
-#include <algorithm>
 #include <cctype>
-#include <cstdlib>
-#include <cstring>
 #include <deque>
 #include <fstream>
 #include <set>
-#include <sstream>
 
-// ── Color Pairs ─────────────────────────────────────────────
-
-enum CP {
-    CP_HEADER = 1, CP_DONE, CP_SELECTED, CP_PRI_LOW, CP_PRI_HIGH,
-    CP_PRI_URGENT, CP_TAG, CP_NOTE, CP_HINT, CP_FOLDER,
-    CP_RED, CP_GREEN, CP_YELLOW, CP_BLUE, CP_MAGENTA, CP_CYAN,
-};
-
-static void init_colors() {
-    start_color();
-    use_default_colors();
-    init_pair(CP_HEADER,     COLOR_WHITE,   COLOR_BLUE);
-    init_pair(CP_DONE,       COLOR_GREEN,   -1);
-    init_pair(CP_SELECTED,   COLOR_CYAN,    -1);
-    init_pair(CP_PRI_LOW,    COLOR_BLUE,    -1);
-    init_pair(CP_PRI_HIGH,   COLOR_YELLOW,  -1);
-    init_pair(CP_PRI_URGENT, COLOR_RED,     -1);
-    init_pair(CP_TAG,        COLOR_CYAN,    -1);
-    init_pair(CP_NOTE,       COLOR_MAGENTA, -1);
-    init_pair(CP_HINT,       COLOR_WHITE,   -1);
-    init_pair(CP_FOLDER,     COLOR_YELLOW,  -1);
-    init_pair(CP_RED,        COLOR_RED,     -1);
-    init_pair(CP_GREEN,      COLOR_GREEN,   -1);
-    init_pair(CP_YELLOW,     COLOR_YELLOW,  -1);
-    init_pair(CP_BLUE,       COLOR_BLUE,    -1);
-    init_pair(CP_MAGENTA,    COLOR_MAGENTA, -1);
-    init_pair(CP_CYAN,       COLOR_CYAN,    -1);
-}
-
-static int status_cp(int color) {
-    if (color >= 1 && color <= 6) return CP_RED + color - 1;
-    return CP_HINT;
-}
-
-// ── Utilities ───────────────────────────────────────────────
-
-static std::string data_path() {
-    const char* home = std::getenv("HOME");
-    return std::string(home ? home : ".") + "/.td.json";
-}
-
-static std::string trunc(const std::string& s, int w) {
-    if (w <= 0) return "";
-    if ((int)s.size() <= w) return s;
-    if (w <= 1) return ".";
-    return s.substr(0, w - 1) + "~";
-}
-
-static std::vector<std::string> word_wrap(const std::string& text, int width) {
-    std::vector<std::string> lines;
-    if (width <= 0 || text.empty()) return {text};
-    std::istringstream words(text);
-    std::string word, line;
-    while (words >> word) {
-        if (line.empty()) line = word;
-        else if ((int)(line.size() + 1 + word.size()) <= width) line += " " + word;
-        else { lines.push_back(line); line = word; }
-    }
-    if (!line.empty()) lines.push_back(line);
-    if (lines.empty()) lines.push_back("");
-    return lines;
-}
-
-// ── Application ─────────────────────────────────────────────
-
-class App {
+class TdApp : public AppBase {
     // ── Display Item ────────────────────────────────────────
     struct DisplayItem {
         bool is_folder = false;
         std::string folder_name;
         Task* task = nullptr;
-        int indent = 0;       // extra x offset (0=root, 2=inside folder)
-        int folder_count = 0; // visible task count in folder
+        int indent = 0;
+        int folder_count = 0;
     };
 
     State state;
@@ -98,16 +31,19 @@ class App {
     std::set<std::string> filter_exclude;
     int filter_cursor = 0;
     std::string search;
-    std::string status_msg;
-    int status_ttl = 0;
-    std::set<int> expanded;          // task IDs with subtasks/notes expanded
+    std::set<int> expanded;
     std::set<std::string> expanded_folders;
 
     static constexpr int MAX_UNDO = 20;
-    static constexpr int PREFIX_W = 7;  // ">[ ] P " cursor+checkbox+space+pri+space
+    static constexpr int PREFIX_W = 7;
     static constexpr int FOLDER_INDENT = 2;
 
     // ── Persistence ─────────────────────────────────────────
+
+    static std::string data_path() {
+        const char* home = std::getenv("HOME");
+        return std::string(home ? home : ".") + "/.td.json";
+    }
 
     void load() {
         std::ifstream f(path);
@@ -120,7 +56,6 @@ class App {
             init_state();
             flash("Error reading ~/.td.json");
         }
-        // Default: expand all folders
         for (auto& t : state.tasks)
             if (!t.folder.empty()) expanded_folders.insert(t.folder);
         for (auto& t : state.archive)
@@ -155,8 +90,6 @@ class App {
         flash("Undone");
     }
 
-    void flash(const std::string& msg) { status_msg = msg; status_ttl = 40; }
-
     // ── Task Filtering ──────────────────────────────────────
 
     std::vector<std::string> all_tags() {
@@ -171,7 +104,6 @@ class App {
     }
 
     bool passes_filter(const Task& t) {
-        if (mode == LIST && t.done) return false;
         if (mode == DONE && !t.done) return false;
         if (!filter_include.empty()) {
             bool found = false;
@@ -196,8 +128,6 @@ class App {
 
     std::vector<DisplayItem> build_display() {
         auto& src = (mode == ARCHIVE) ? state.archive : state.tasks;
-
-        // Group filtered tasks by folder
         std::map<std::string, std::vector<Task*>> by_folder;
         std::vector<Task*> unfiled;
         for (auto& t : src) {
@@ -207,15 +137,12 @@ class App {
         }
 
         std::vector<DisplayItem> items;
-
-        // Folders first (alphabetical)
         for (auto& [fname, ftasks] : by_folder) {
             DisplayItem fi;
             fi.is_folder = true;
             fi.folder_name = fname;
             fi.folder_count = (int)ftasks.size();
             items.push_back(fi);
-
             if (expanded_folders.count(fname)) {
                 for (auto* t : ftasks) {
                     DisplayItem ti;
@@ -225,14 +152,11 @@ class App {
                 }
             }
         }
-
-        // Unfiled tasks after folders
         for (auto* t : unfiled) {
             DisplayItem ti;
             ti.task = t;
             items.push_back(ti);
         }
-
         return items;
     }
 
@@ -241,11 +165,10 @@ class App {
         Task* t = item.task;
         if (!t) return 1;
 
-        // Compute wrapped text height
         auto inds = build_indicators(*t);
         int ind_w = indicators_width(inds);
         int prefix = 1 + item.indent + 3 + 1 + 1 + 1;
-        int sep_w = (ind_w > 0) ? 3 : 0; // " - " separator
+        int sep_w = (ind_w > 0) ? 3 : 0;
         int text_avail = COLS - prefix - ind_w - sep_w;
 
         std::string display = t->text;
@@ -285,105 +208,13 @@ class App {
         }
     }
 
-    // ── Text Input ──────────────────────────────────────────
-
-    std::string text_input(const std::string& prompt, const std::string& initial = "") {
-        std::string buf = initial;
-        int pos = (int)buf.size();
-        while (true) {
-            move(LINES - 1, 0);
-            clrtoeol();
-            attron(A_BOLD);
-            addstr(prompt.c_str());
-            attroff(A_BOLD);
-            int input_x = (int)prompt.size();
-            int avail = COLS - input_x;
-            int view_start = 0;
-            if (pos > avail - 1) view_start = pos - avail + 1;
-            addstr(buf.substr(view_start, avail).c_str());
-            move(LINES - 1, input_x + pos - view_start);
-            curs_set(1);
-            refresh();
-
-            int ch = getch();
-            if (ch == ERR) continue;
-            if (ch == '\n' || ch == KEY_ENTER) { curs_set(0); return buf; }
-            if (ch == 27) { curs_set(0); return ""; }
-            if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-                if (pos > 0) buf.erase(--pos, 1);
-            } else if (ch == KEY_DC) {
-                if (pos < (int)buf.size()) buf.erase(pos, 1);
-            } else if (ch == KEY_LEFT) {
-                if (pos > 0) --pos;
-            } else if (ch == KEY_RIGHT) {
-                if (pos < (int)buf.size()) ++pos;
-            } else if (ch == KEY_HOME || ch == 1) {
-                pos = 0;
-            } else if (ch == KEY_END || ch == 5) {
-                pos = (int)buf.size();
-            } else if (ch == 21) {
-                buf.clear(); pos = 0;
-            } else if (ch >= 32 && ch < 127) {
-                buf.insert(pos++, 1, (char)ch);
-            }
-        }
-    }
-
-    bool confirm(const std::string& prompt) {
-        move(LINES - 1, 0);
-        clrtoeol();
-        attron(A_BOLD);
-        addstr(prompt.c_str());
-        attroff(A_BOLD);
-        addstr(" (y/n) ");
-        refresh();
-        while (true) {
-            int ch = getch();
-            if (ch == ERR) continue;
-            return ch == 'y' || ch == 'Y';
-        }
-    }
-
-    int pick_number(const std::string& prompt, int max) {
-        std::string input = text_input(prompt);
-        if (input.empty()) return -1;
-        try {
-            int n = std::stoi(input);
-            if (n >= 1 && n <= max) return n - 1;
-        } catch (...) {}
-        flash("Invalid selection");
-        return -1;
-    }
-
     // ── Drawing ─────────────────────────────────────────────
-
-    void draw() {
-        erase();
-        draw_header();
-        int content_h = LINES - 4; // 1 header + 1 status + 2 hint lines
-        if (content_h < 1) content_h = 1;
-
-        switch (mode) {
-            case LIST: case DONE: case ARCHIVE: {
-                auto display = build_display();
-                clamp_cursor((int)display.size());
-                ensure_visible(display, content_h);
-                draw_list(display, 1, content_h);
-                break;
-            }
-            case DETAIL: draw_detail(1, content_h); break;
-            case HELP:   draw_help(1, content_h); break;
-            case FILTER: draw_filter(1, content_h); break;
-        }
-        draw_footer();
-        refresh();
-    }
 
     void draw_header() {
         attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
-        move(0, 0);
+        move(top_y, 0);
         for (int i = 0; i < COLS; ++i) addch(' ');
-        move(0, 1);
+        move(top_y, 1);
 
         switch (mode) {
             case LIST:    addstr("td"); break;
@@ -394,7 +225,6 @@ class App {
             case FILTER:  addstr("FILTER BY TAG"); break;
         }
 
-        // Active filter indicators (right-aligned)
         std::string right;
         for (auto& tag : filter_include) right += " +" + tag;
         for (auto& tag : filter_exclude) right += " !" + tag;
@@ -402,7 +232,7 @@ class App {
         if (!right.empty()) {
             right = " [" + right.substr(1) + "]";
             int rx = COLS - (int)right.size() - 1;
-            if (rx > 0) { move(0, rx); addstr(right.c_str()); }
+            if (rx > 0) { move(top_y, rx); addstr(right.c_str()); }
         }
         attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
     }
@@ -463,9 +293,9 @@ class App {
 
     // ── List Rendering ──────────────────────────────────────
 
-    void draw_list(const std::vector<DisplayItem>& items, int start_y, int content_h) {
+    void draw_list(const std::vector<DisplayItem>& items, int start_y, int ch) {
         if (items.empty()) {
-            move(start_y + content_h / 2, 0);
+            move(start_y + ch / 2, 0);
             attron(A_DIM);
             const char* msg = (mode == LIST)    ? "  No tasks. Press 'a' to add one."
                             : (mode == DONE)    ? "  No completed tasks."
@@ -476,16 +306,14 @@ class App {
         }
 
         int y = start_y;
-        for (int i = scroll; i < (int)items.size() && y < start_y + content_h; ++i) {
+        for (int i = scroll; i < (int)items.size() && y < start_y + ch; ++i) {
             auto& item = items[i];
             bool sel = (i == cursor);
-
             if (item.is_folder) {
                 draw_folder_row(item, y, sel);
                 ++y;
             } else {
                 draw_task_row(*item.task, y, sel, item.indent);
-                // y is advanced inside draw_task_row via reference
             }
         }
     }
@@ -499,13 +327,11 @@ class App {
         attron(COLOR_PAIR(CP_FOLDER));
         addstr(exp ? "[-]" : "[+]");
         attroff(COLOR_PAIR(CP_FOLDER));
-
         addch(' ');
 
-        // Folder name + count
         attron(COLOR_PAIR(CP_FOLDER));
-        std::string label = item.folder_name + " (" + std::to_string(item.folder_count) + ")";
-        addstr(trunc(label, COLS - 6).c_str());
+        std::string lbl = item.folder_name + " (" + std::to_string(item.folder_count) + ")";
+        addstr(trunc(lbl, COLS - 6).c_str());
         attroff(COLOR_PAIR(CP_FOLDER));
 
         if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
@@ -514,18 +340,15 @@ class App {
     void draw_task_row(Task& t, int& y, bool sel, int indent) {
         auto inds = build_indicators(t);
         int ind_w = indicators_width(inds);
-        int prefix = 1 + indent + 3 + 1 + 1 + 1; // cursor + indent + checkbox + space + pri + space
-        int sep_w = (ind_w > 0) ? 3 : 0; // " - " min separator
+        int prefix = 1 + indent + 3 + 1 + 1 + 1;
+        int sep_w = (ind_w > 0) ? 3 : 0;
         int text_avail = COLS - prefix - ind_w - sep_w;
 
         std::string display = t.text;
         for (auto& tag : t.tags) display += " +" + tag;
-
-        // Word-wrap the display text
         auto lines = word_wrap(display, std::max(text_avail, 5));
 
-        // ── First line: prefix + text + dashes + indicators ──
-
+        // ── First line ──
         move(y, 0);
         if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
         addch(sel ? '>' : ' ');
@@ -550,7 +373,6 @@ class App {
         if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
         addch(' ');
 
-        // First line text (split into main text + tag portion)
         std::string first_line = lines.empty() ? "" : lines[0];
         int tag_start = (int)t.text.size();
         int main_len = std::min(tag_start, (int)first_line.size());
@@ -567,7 +389,7 @@ class App {
             else attroff(COLOR_PAIR(CP_TAG));
         }
 
-        // Dashed separator between text and indicators (selected line only)
+        // Dashed separator (selected line only)
         if (ind_w > 0) {
             if (sel) {
                 int text_end_x = prefix + (int)first_line.size();
@@ -586,25 +408,21 @@ class App {
         if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
         ++y;
 
-        // ── Continuation lines (wrapped text) ──
-
+        // ── Continuation lines ──
         for (int li = 1; li < (int)lines.size(); ++li) {
             if (y >= LINES - 3) break;
             move(y, prefix);
             if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
 
-            // Figure out if this continuation line has tag text
             int chars_before = 0;
             for (int pi = 0; pi < li; ++pi) chars_before += (int)lines[pi].size() + 1;
             int remain_main = tag_start - chars_before;
 
             if (remain_main >= (int)lines[li].size()) {
-                // All main text
                 if (t.done) attron(COLOR_PAIR(CP_DONE));
                 addstr(lines[li].c_str());
                 if (t.done) attroff(COLOR_PAIR(CP_DONE));
             } else if (remain_main > 0) {
-                // Mixed: some main, some tag
                 if (t.done) attron(COLOR_PAIR(CP_DONE));
                 addnstr(lines[li].c_str(), remain_main);
                 if (t.done) attroff(COLOR_PAIR(CP_DONE));
@@ -614,7 +432,6 @@ class App {
                 if (!sel) attroff(COLOR_PAIR(CP_TAG) | A_DIM);
                 else attroff(COLOR_PAIR(CP_TAG));
             } else {
-                // All tag text
                 if (!sel) attron(COLOR_PAIR(CP_TAG) | A_DIM);
                 else attron(COLOR_PAIR(CP_TAG));
                 addstr(lines[li].c_str());
@@ -627,11 +444,9 @@ class App {
         }
 
         // ── Expanded: description, subtasks, notes ──
-
         if (expanded.count(t.id)) {
             int sub_indent = prefix;
 
-            // Description
             if (!t.description.empty()) {
                 auto desc_lines = word_wrap(t.description, std::max(COLS - sub_indent - 2, 5));
                 for (auto& dl : desc_lines) {
@@ -672,9 +487,8 @@ class App {
 
     // ── Detail View ─────────────────────────────────────────
 
-    void draw_detail(int start_y, int content_h) {
+    void draw_detail(int start_y, int ch) {
         auto display = build_display();
-        // Find the task under cursor
         Task* tp = nullptr;
         if (cursor >= 0 && cursor < (int)display.size() && !display[cursor].is_folder)
             tp = display[cursor].task;
@@ -685,7 +499,7 @@ class App {
         int w = COLS - 2;
 
         auto line = [&](const std::string& s, int cp = 0, int attr = 0) {
-            if (y >= start_y + content_h) return;
+            if (y >= start_y + ch) return;
             move(y, 1);
             if (cp || attr) attron(COLOR_PAIR(cp) | attr);
             addstr(trunc(s, w).c_str());
@@ -695,7 +509,7 @@ class App {
 
         auto wrapped = [&](const std::string& s, int indent, int cp = 0) {
             for (auto& l : word_wrap(s, w - indent)) {
-                if (y >= start_y + content_h) return;
+                if (y >= start_y + ch) return;
                 move(y, 1 + indent);
                 if (cp) attron(COLOR_PAIR(cp));
                 addstr(trunc(l, w - indent).c_str());
@@ -708,17 +522,14 @@ class App {
         line(sep, CP_HINT, A_DIM);
         ++y;
 
-        // Title
         wrapped(t.text, 1, t.done ? CP_DONE : 0);
 
-        // Description
         if (!t.description.empty()) {
             ++y;
             wrapped(t.description, 2, CP_HINT);
         }
         ++y;
 
-        // Metadata
         const char* pri_names[] = {"normal", "low", "high", "urgent"};
         if (t.priority > 0 && t.priority <= 3) {
             int pcp[] = {0, CP_PRI_LOW, CP_PRI_HIGH, CP_PRI_URGENT};
@@ -738,7 +549,6 @@ class App {
             line("Completed: " + format_date(t.completed_at), CP_DONE);
         line("Created: " + format_date(t.created), CP_HINT, A_DIM);
 
-        // Subtasks
         if (!t.subtasks.empty()) {
             ++y;
             int sub_done = 0;
@@ -746,7 +556,7 @@ class App {
             line("Subtasks (" + std::to_string(sub_done) + "/" +
                  std::to_string(t.subtasks.size()) + "):", CP_HINT, A_DIM);
             for (int si = 0; si < (int)t.subtasks.size(); ++si) {
-                if (y >= start_y + content_h) break;
+                if (y >= start_y + ch) break;
                 auto& sub = t.subtasks[si];
                 std::string sl = "  " + std::to_string(si + 1) + ". ";
                 sl += sub.done ? "[x] " : "[ ] ";
@@ -755,7 +565,6 @@ class App {
             }
         }
 
-        // Statuses
         if (!t.statuses.empty()) {
             ++y;
             for (auto& [name, val] : t.statuses) {
@@ -766,12 +575,11 @@ class App {
             }
         }
 
-        // Notes
         if (!t.notes.empty()) {
             ++y;
             line("Notes:", CP_HINT, A_DIM);
             for (int ni = 0; ni < (int)t.notes.size(); ++ni) {
-                if (y >= start_y + content_h) break;
+                if (y >= start_y + ch) break;
                 auto& note = t.notes[ni];
                 std::string nl = "  " + std::to_string(ni + 1) + ". " +
                     format_short(note.timestamp) + " " + note.text;
@@ -785,12 +593,12 @@ class App {
 
     // ── Help View ───────────────────────────────────────────
 
-    void draw_help(int start_y, int content_h) {
+    void draw_help(int start_y, int ch) {
         int y = start_y;
         int w = COLS - 2;
 
         auto section = [&](const char* title) {
-            if (y >= start_y + content_h) return;
+            if (y >= start_y + ch) return;
             ++y;
             move(y, 1);
             attron(A_BOLD | COLOR_PAIR(CP_SELECTED));
@@ -800,7 +608,7 @@ class App {
         };
 
         auto bind = [&](const char* key, const char* desc) {
-            if (y >= start_y + content_h) return;
+            if (y >= start_y + ch) return;
             move(y, 2);
             attron(A_BOLD);
             addstr(key);
@@ -851,19 +659,57 @@ class App {
         bind("q", "Quit / back");
     }
 
-    // ── Footer (status + 2-line hints) ──────────────────────
+    // ── Filter View ─────────────────────────────────────────
+
+    void draw_filter(int start_y, int ch) {
+        auto tags = all_tags();
+        if (tags.empty()) { mode = LIST; return; }
+        if (filter_cursor >= (int)tags.size()) filter_cursor = (int)tags.size() - 1;
+
+        int y = start_y;
+
+        move(y, 1);
+        attron(A_DIM);
+        addstr("Space=include  !=exclude  Enter/q=apply");
+        attroff(A_DIM);
+        y += 2;
+
+        for (int i = 0; i < (int)tags.size() && y < start_y + ch; ++i) {
+            move(y, 2);
+            bool sel = (i == filter_cursor);
+            if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+
+            if (filter_include.count(tags[i])) {
+                attron(COLOR_PAIR(CP_GREEN));
+                addstr("[+] ");
+                attroff(COLOR_PAIR(CP_GREEN));
+            } else if (filter_exclude.count(tags[i])) {
+                attron(COLOR_PAIR(CP_RED));
+                addstr("[!] ");
+                attroff(COLOR_PAIR(CP_RED));
+            } else {
+                addstr("[ ] ");
+            }
+
+            if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            addstr(trunc(tags[i], COLS - 12).c_str());
+
+            int tag_count = 0;
+            for (auto& t : state.tasks)
+                for (auto& tt : t.tags) if (tt == tags[i]) { ++tag_count; break; }
+            std::string cnt = " (" + std::to_string(tag_count) + ")";
+            attron(A_DIM);
+            addstr(cnt.c_str());
+            attroff(A_DIM);
+
+            if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            ++y;
+        }
+    }
+
+    // ── Footer ──────────────────────────────────────────────
 
     void draw_footer() {
-        // Status message
-        if (status_ttl > 0 && !status_msg.empty()) {
-            move(LINES - 3, 0);
-            attron(A_BOLD);
-            addstr((" " + trunc(status_msg, COLS - 2)).c_str());
-            attroff(A_BOLD);
-            --status_ttl;
-        }
-
-        // Build hint string based on mode
         std::string hints;
         switch (mode) {
             case LIST:
@@ -878,7 +724,7 @@ class App {
                 hints += " q:back";
                 break;
             case ARCHIVE:
-                hints = "d:del q:back";
+                hints = "x:unarchive d:del q:back";
                 break;
             case DETAIL:
                 hints = "e:edit D:desc x:done p:pri t:tag c:sub 1-9:subtask";
@@ -891,53 +737,16 @@ class App {
                 hints = "j/k:navigate Space:include !:exclude Enter/q:done";
                 break;
         }
-
-        // Word-wrap hints into 2 lines
-        int max_w = COLS - 2;
-        std::string line1, line2;
-        std::istringstream iss(hints);
-        std::string word;
-        while (iss >> word) {
-            if ((int)(line1.size() + word.size() + 1) <= max_w || line1.empty()) {
-                if (!line1.empty()) line1 += " ";
-                line1 += word;
-            } else {
-                if (!line2.empty()) line2 += " ";
-                line2 += word;
-            }
-        }
-
-        attron(COLOR_PAIR(CP_HINT) | A_DIM);
-        move(LINES - 2, 0);
-        clrtoeol();
-        addstr((" " + trunc(line1, COLS - 2)).c_str());
-        move(LINES - 1, 0);
-        clrtoeol();
-        if (!line2.empty())
-            addstr((" " + trunc(line2, COLS - 2)).c_str());
-        attroff(COLOR_PAIR(CP_HINT) | A_DIM);
+        draw_status_and_hints(hints);
     }
 
     // ── Input Handling ──────────────────────────────────────
-
-    bool handle(int ch) {
-        switch (mode) {
-            case LIST: case DONE: case ARCHIVE: return handle_list(ch);
-            case DETAIL: return handle_detail(ch);
-            case FILTER: return handle_filter(ch);
-            case HELP:
-                if (ch == 'q' || ch == '?' || ch == 27) mode = LIST;
-                return true;
-        }
-        return true;
-    }
 
     bool handle_list(int ch) {
         auto display = build_display();
         int count = (int)display.size();
 
         switch (ch) {
-            // Navigation
             case 'j': case KEY_DOWN: if (cursor < count - 1) ++cursor; break;
             case 'k': case KEY_UP:   if (cursor > 0) --cursor; break;
             case 'g': case KEY_HOME: cursor = 0; break;
@@ -945,12 +754,10 @@ class App {
             case 4:  cursor = std::min(cursor + 10, std::max(0, count - 1)); break;
             case 21: cursor = std::max(cursor - 10, 0); break;
 
-            // Enter: expand folder or open detail
             case '\n': case KEY_ENTER: {
                 if (count == 0) break;
                 auto& item = display[cursor];
                 if (item.is_folder) {
-                    // Toggle folder expansion
                     if (expanded_folders.count(item.folder_name))
                         expanded_folders.erase(item.folder_name);
                     else
@@ -961,7 +768,6 @@ class App {
                 break;
             }
 
-            // Add task
             case 'a': {
                 if (mode != LIST) break;
                 std::string text = text_input("Add: ");
@@ -972,7 +778,6 @@ class App {
                 t.tags = extract_tags(text);
                 t.text = text;
                 t.created = now_iso();
-                // Auto-assign folder from cursor context
                 if (cursor >= 0 && cursor < count) {
                     auto& item = display[cursor];
                     if (item.is_folder) {
@@ -985,7 +790,6 @@ class App {
                 state.tasks.push_back(t);
                 save();
                 flash("Added: " + t.text);
-                // Move cursor to new task
                 auto disp2 = build_display();
                 for (int i = 0; i < (int)disp2.size(); ++i)
                     if (!disp2[i].is_folder && disp2[i].task && disp2[i].task->id == t.id)
@@ -993,7 +797,6 @@ class App {
                 break;
             }
 
-            // Edit
             case 'e': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1011,7 +814,6 @@ class App {
                 break;
             }
 
-            // Description
             case 'D': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1024,11 +826,25 @@ class App {
                 break;
             }
 
-            // Toggle done
             case 'x': case ' ': {
-                if (count == 0 || mode == ARCHIVE) break;
+                if (count == 0) break;
                 auto& item = display[cursor];
                 if (item.is_folder) break;
+                // Unarchive: move task back to active list
+                if (mode == ARCHIVE) {
+                    push_undo();
+                    Task* t = item.task;
+                    int id = t->id;
+                    t->done = false;
+                    t->completed_at.clear();
+                    state.tasks.push_back(*t);
+                    state.archive.erase(std::remove_if(state.archive.begin(), state.archive.end(),
+                        [id](const Task& task) { return task.id == id; }), state.archive.end());
+                    save();
+                    clamp_cursor((int)build_display().size());
+                    flash("Unarchived");
+                    break;
+                }
                 push_undo();
                 Task* t = item.task;
                 t->done = !t->done;
@@ -1045,12 +861,10 @@ class App {
                 break;
             }
 
-            // Delete
             case 'd': {
                 if (count == 0) break;
                 auto& item = display[cursor];
                 if (item.is_folder) {
-                    // Delete folder: move all tasks to unfiled
                     if (!confirm("Remove folder? Tasks become unfiled.")) break;
                     push_undo();
                     for (auto& t : state.tasks)
@@ -1073,7 +887,6 @@ class App {
                 break;
             }
 
-            // Priority
             case 'p': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1086,7 +899,6 @@ class App {
                 break;
             }
 
-            // Tag (toggle)
             case 't': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1114,7 +926,6 @@ class App {
                 break;
             }
 
-            // Add subtask
             case 'c': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1131,7 +942,6 @@ class App {
                 break;
             }
 
-            // Note
             case 'n': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1145,7 +955,6 @@ class App {
                 break;
             }
 
-            // Delete last note
             case 'N': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1159,7 +968,6 @@ class App {
                 break;
             }
 
-            // Expand inline
             case 'o': {
                 if (count == 0) break;
                 auto& item = display[cursor];
@@ -1176,7 +984,6 @@ class App {
                 break;
             }
 
-            // Expand/collapse ALL
             case 'O': {
                 auto& src = (mode == ARCHIVE) ? state.archive : state.tasks;
                 bool all_expanded = true;
@@ -1203,7 +1010,6 @@ class App {
                 break;
             }
 
-            // Status
             case 's': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1212,7 +1018,6 @@ class App {
                 break;
             }
 
-            // Move to folder
             case 'm': {
                 if (count == 0 || mode == ARCHIVE) break;
                 auto& item = display[cursor];
@@ -1237,7 +1042,6 @@ class App {
                 break;
             }
 
-            // Reorder: Shift+Arrow or J/K
             case 'J': case KEY_SF: {
                 if (mode != LIST || count < 2) break;
                 if (cursor >= count - 1) break;
@@ -1284,7 +1088,6 @@ class App {
                 break;
             }
 
-            // Filter by tag (open filter panel)
             case 'f': {
                 auto tags = all_tags();
                 if (tags.empty()) { flash("No tags to filter"); break; }
@@ -1293,7 +1096,6 @@ class App {
                 break;
             }
 
-            // Search
             case '/': {
                 std::string q = text_input("Search (Esc=cancel): ", search);
                 search = q;
@@ -1301,7 +1103,6 @@ class App {
                 break;
             }
 
-            // Esc: clear filter/search, or go back
             case 27:
                 if (has_active_filters()) {
                     filter_include.clear();
@@ -1367,7 +1168,6 @@ class App {
             t = display[cursor].task;
         if (!t) { mode = LIST; return true; }
 
-        // Number keys 1-9: toggle subtask
         if (ch >= '1' && ch <= '9') {
             int idx = ch - '1';
             if (idx < (int)t->subtasks.size()) {
@@ -1506,15 +1306,61 @@ class App {
             }
 
             case 's': handle_status(t); break;
-
             case 'd': handle_delete_menu(t); break;
-
             case '?': mode = HELP; break;
         }
         return true;
     }
 
-    // ── Delete Menu (detail view) ───────────────────────────
+    bool handle_filter(int ch) {
+        auto tags = all_tags();
+        if (tags.empty()) { mode = LIST; return true; }
+        int count = (int)tags.size();
+
+        switch (ch) {
+            case 'j': case KEY_DOWN:
+                if (filter_cursor < count - 1) ++filter_cursor;
+                break;
+            case 'k': case KEY_UP:
+                if (filter_cursor > 0) --filter_cursor;
+                break;
+            case 'g': case KEY_HOME:
+                filter_cursor = 0;
+                break;
+            case 'G': case KEY_END:
+                filter_cursor = std::max(0, count - 1);
+                break;
+
+            case ' ': {
+                auto& tag = tags[filter_cursor];
+                filter_exclude.erase(tag);
+                if (filter_include.count(tag))
+                    filter_include.erase(tag);
+                else
+                    filter_include.insert(tag);
+                break;
+            }
+
+            case '!': {
+                auto& tag = tags[filter_cursor];
+                filter_include.erase(tag);
+                if (filter_exclude.count(tag))
+                    filter_exclude.erase(tag);
+                else
+                    filter_exclude.insert(tag);
+                break;
+            }
+
+            case '\n': case KEY_ENTER: case 'q': case 27:
+                mode = LIST;
+                cursor = 0;
+                scroll = 0;
+                break;
+        }
+        return true;
+    }
+
+    // ── Delete Menu ─────────────────────────────────────────
 
     void handle_delete_menu(Task* t) {
         std::string prompt = "Delete: [t]ask";
@@ -1653,11 +1499,11 @@ class App {
         if (ch == '+') {
             std::string name = text_input("Status name: ");
             if (name.empty()) return;
-            std::string label = auto_label(name);
+            std::string lbl = auto_label(name);
             int color = 1 + ((int)state.status_defs.size() % 6);
-            state.status_defs.push_back({name, label, color});
+            state.status_defs.push_back({name, lbl, color});
             save();
-            flash("Added status: " + name + " [" + label + "]");
+            flash("Added status: " + name + " [" + lbl + "]");
             return;
         }
 
@@ -1684,108 +1530,6 @@ class App {
         }
     }
 
-    // ── Filter View ──────────────────────────────────────────
-
-    void draw_filter(int start_y, int content_h) {
-        auto tags = all_tags();
-        if (tags.empty()) { mode = LIST; return; }
-        if (filter_cursor >= (int)tags.size()) filter_cursor = (int)tags.size() - 1;
-
-        int y = start_y;
-        int w = COLS - 4;
-
-        move(y, 1);
-        attron(A_DIM);
-        addstr("Space=include  !=exclude  Enter/q=apply");
-        attroff(A_DIM);
-        y += 2;
-
-        for (int i = 0; i < (int)tags.size() && y < start_y + content_h; ++i) {
-            move(y, 2);
-            bool sel = (i == filter_cursor);
-            if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-
-            // Checkbox state
-            if (filter_include.count(tags[i])) {
-                attron(COLOR_PAIR(CP_GREEN));
-                addstr("[+] ");
-                attroff(COLOR_PAIR(CP_GREEN));
-            } else if (filter_exclude.count(tags[i])) {
-                attron(COLOR_PAIR(CP_RED));
-                addstr("[!] ");
-                attroff(COLOR_PAIR(CP_RED));
-            } else {
-                addstr("[ ] ");
-            }
-
-            if (sel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-            addstr(trunc(tags[i], w).c_str());
-
-            // Show count of tasks with this tag
-            int tag_count = 0;
-            for (auto& t : state.tasks)
-                for (auto& tt : t.tags) if (tt == tags[i]) { ++tag_count; break; }
-            std::string cnt = " (" + std::to_string(tag_count) + ")";
-            attron(A_DIM);
-            addstr(cnt.c_str());
-            attroff(A_DIM);
-
-            if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-            ++y;
-        }
-    }
-
-    bool handle_filter(int ch) {
-        auto tags = all_tags();
-        if (tags.empty()) { mode = LIST; return true; }
-        int count = (int)tags.size();
-
-        switch (ch) {
-            case 'j': case KEY_DOWN:
-                if (filter_cursor < count - 1) ++filter_cursor;
-                break;
-            case 'k': case KEY_UP:
-                if (filter_cursor > 0) --filter_cursor;
-                break;
-            case 'g': case KEY_HOME:
-                filter_cursor = 0;
-                break;
-            case 'G': case KEY_END:
-                filter_cursor = std::max(0, count - 1);
-                break;
-
-            // Space: toggle include
-            case ' ': {
-                auto& tag = tags[filter_cursor];
-                filter_exclude.erase(tag);
-                if (filter_include.count(tag))
-                    filter_include.erase(tag);
-                else
-                    filter_include.insert(tag);
-                break;
-            }
-
-            // !: toggle exclude
-            case '!': {
-                auto& tag = tags[filter_cursor];
-                filter_include.erase(tag);
-                if (filter_exclude.count(tag))
-                    filter_exclude.erase(tag);
-                else
-                    filter_exclude.insert(tag);
-                break;
-            }
-
-            // Enter/q/Esc: apply and go back
-            case '\n': case KEY_ENTER: case 'q': case 27:
-                mode = LIST;
-                cursor = 0;
-                scroll = 0;
-                break;
-        }
-        return true;
-    }
-
     std::string auto_label(const std::string& name) {
         std::set<std::string> used;
         for (auto& d : state.status_defs) used.insert(d.label);
@@ -1806,33 +1550,43 @@ class App {
     }
 
 public:
-    App() : path(data_path()) {}
+    const char* id() override { return "td"; }
+    const char* label() override { return "todo"; }
 
-    void run() {
+    void init() override {
+        path = data_path();
         load();
-        initscr();
-        raw();
-        noecho();
-        keypad(stdscr, TRUE);
-        curs_set(0);
-        set_escdelay(25); // FIX #3: fast ESC response
-        timeout(50);
-        if (has_colors()) init_colors();
+    }
 
-        while (true) {
-            draw();
-            int ch = getch();
-            if (ch == ERR) continue;
-            if (!handle(ch)) break;
+    void draw() override {
+        draw_header();
+        int ch = LINES - top_y - 4;
+        if (ch < 1) ch = 1;
+
+        switch (mode) {
+            case LIST: case DONE: case ARCHIVE: {
+                auto display = build_display();
+                clamp_cursor((int)display.size());
+                ensure_visible(display, ch);
+                draw_list(display, top_y + 1, ch);
+                break;
+            }
+            case DETAIL: draw_detail(top_y + 1, ch); break;
+            case HELP:   draw_help(top_y + 1, ch); break;
+            case FILTER: draw_filter(top_y + 1, ch); break;
         }
-        endwin();
+        draw_footer();
+    }
+
+    bool handle(int ch) override {
+        switch (mode) {
+            case LIST: case DONE: case ARCHIVE: return handle_list(ch);
+            case DETAIL: return handle_detail(ch);
+            case FILTER: return handle_filter(ch);
+            case HELP:
+                if (ch == 'q' || ch == '?' || ch == 27) mode = LIST;
+                return true;
+        }
+        return true;
     }
 };
-
-// ── Main ────────────────────────────────────────────────────
-
-int main() {
-    App app;
-    app.run();
-    return 0;
-}
