@@ -219,7 +219,14 @@ class ConsoleApp : public AppBase {
 
         progress("[" + e.label + "] decrypting...");
         std::string data = decrypt(enc);
-        if (data.empty()) { emit("  [" + e.label + "] decrypt failed (wrong password?)", L_ERR); return false; }
+        if (data.empty()) { emit("  [" + e.label + "] decrypt failed - wrong encryption password?", L_ERR); return false; }
+
+        // Validate it's actually JSON before touching the file
+        try { json::parse(data); }
+        catch (...) {
+            emit("  [" + e.label + "] decrypted data is not valid JSON - wrong encryption password?", L_ERR);
+            return false;
+        }
 
         std::rename(e.file.c_str(), (e.file + ".bak").c_str());
         std::ofstream out(e.file);
@@ -255,7 +262,7 @@ class ConsoleApp : public AppBase {
 
     void cmd_push(const std::vector<std::string>& args) {
         if (bucket_id.empty()) { emit("  bucket ID not set  ->  run: key <id>", L_ERR); return; }
-        if (session_pw.empty()) { emit("  password not set  ->  run: password", L_ERR); return; }
+        if (session_pw.empty()) { emit("  encryption password not set  ->  run: password", L_ERR); return; }
 
         std::vector<SyncEntry*> targets;
         if (args.empty()) {
@@ -277,7 +284,7 @@ class ConsoleApp : public AppBase {
 
     void cmd_pull(const std::vector<std::string>& args) {
         if (bucket_id.empty()) { emit("  bucket ID not set  ->  run: key <id>", L_ERR); return; }
-        if (session_pw.empty()) { emit("  password not set  ->  run: password", L_ERR); return; }
+        if (session_pw.empty()) { emit("  encryption password not set  ->  run: password", L_ERR); return; }
 
         std::vector<SyncEntry*> targets;
         if (args.empty()) {
@@ -299,7 +306,7 @@ class ConsoleApp : public AppBase {
 
     void cmd_status() {
         emit("  bucket   " + (bucket_id.empty() ? "[not set]" : bucket_id));
-        emit("  password " + std::string(session_pw.empty() ? "[not set]" : "[set for session]"));
+        emit("  enc password " + std::string(session_pw.empty() ? "[not set]" : "[set for session]"));
         for (auto& e : entries) {
             std::string ps = e.last_push.empty() ? "never" : format_short(e.last_push);
             std::string pl = e.last_pull.empty() ? "never" : format_short(e.last_pull);
@@ -315,19 +322,19 @@ class ConsoleApp : public AppBase {
     }
 
     void cmd_password() {
-        std::string pw = pw_input("new password:");
+        std::string pw = pw_input("new encryption password:");
         if (pw.empty()) { emit("  cancelled", L_DIM); return; }
         std::string pw2 = pw_input("confirm:");
         if (pw != pw2) { emit("  passwords don't match", L_ERR); return; }
         session_pw = pw;
-        emit("  password set for session", L_OK);
+        emit("  encryption password set for session", L_OK);
     }
 
     void cmd_help() {
         emit("  commands", L_HEAD);
         emit("    push [td|pb]      encrypt + upload", L_DIM);
         emit("    pull [td|pb]      download + decrypt", L_DIM);
-        emit("    status            bucket, password, and last sync times", L_DIM);
+        emit("    status            bucket, encryption password, and last sync times", L_DIM);
         emit("    key <bucket_id>   set kvdb.io bucket ID", L_DIM);
         emit("    password          set encryption password (session only)", L_DIM);
         emit("    clear             clear output", L_DIM);
