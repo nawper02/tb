@@ -12,30 +12,26 @@
 // ── Console / Sync App ───────────────────────────────────────
 //
 // Encrypts ~/.td.json and ~/.pb.json with AES-256-CBC (via openssl)
-// and stores them in private jsonbin.io bins.
+// and stores them at kvdb.io under fixed keys /td and /pb.
 //
-// Setup:
-//   1. Create a free account at https://jsonbin.io
-//   2. Copy your Master Key from the dashboard
-//   3. Press 'k' in this app to enter it (saved to ~/.tb_console.json)
-//   4. Press 'p' to set an encryption password (session-only, never saved)
-//   5. Press 'u' to push, 'd' to pull
+// Setup (one-time, same account on all machines):
+//   1. Go to https://kvdb.io and create a free bucket → you get a short ID
+//   2. Press 'K' in this app and enter that bucket ID
+//   3. Press 'p' to set an encryption password (session-only, never saved)
+//   4. Press 'u' to push, 'd' to pull
 //
-// On another machine: same steps 1-4, but step 1 reuses the same account.
-// The bin IDs are stored in ~/.tb_console.json so you can copy that file
-// across machines to wire them up to the same bins.
+// On another machine: enter the same bucket ID + same password. That's it.
 
 class ConsoleApp : public AppBase {
     struct SyncEntry {
-        std::string label;       // "td" or "pb"
-        std::string file;        // ~/.td.json etc.
-        std::string bin_id;      // jsonbin.io bin ID
+        std::string label;      // "td" or "pb"
+        std::string file;       // ~/.td.json etc.
         std::string last_push;
         std::string last_pull;
     };
 
     std::string cfg_path;
-    std::string api_key;
+    std::string bucket_id;
     std::string session_pw;
     std::vector<SyncEntry> entries;
     int cursor = 0;
@@ -55,9 +51,8 @@ class ConsoleApp : public AppBase {
         std::string s((std::istreambuf_iterator<char>(f)), {});
         try {
             auto v = json::parse(s);
-            api_key = v.str_or("api_key", "");
+            bucket_id = v.str_or("bucket_id", "");
             for (auto& e : entries) {
-                e.bin_id    = v.str_or(e.label + "_bin_id",    "");
                 e.last_push = v.str_or(e.label + "_last_push", "");
                 e.last_pull = v.str_or(e.label + "_last_pull", "");
             }
@@ -66,9 +61,8 @@ class ConsoleApp : public AppBase {
 
     void save_cfg() {
         json::Object o;
-        o["api_key"] = api_key;
+        o["bucket_id"] = bucket_id;
         for (auto& e : entries) {
-            o[e.label + "_bin_id"]    = e.bin_id;
             o[e.label + "_last_push"] = e.last_push;
             o[e.label + "_last_pull"] = e.last_pull;
         }
@@ -78,7 +72,6 @@ class ConsoleApp : public AppBase {
 
     // ── Shell ────────────────────────────────────────────────
 
-    // Single-quote escape for passing arguments to shell safely
     static std::string sq(const std::string& s) {
         std::string r = "'";
         for (char c : s) { if (c == '\'') r += "'\\''"; else r += c; }
@@ -117,69 +110,28 @@ class ConsoleApp : public AppBase {
         return out;
     }
 
-    // ── jsonbin.io REST API ──────────────────────────────────
+    // ── kvdb.io API ──────────────────────────────────────────
 
-    // Minimal JSON string escape (encrypted content is base64 so mostly safe,
-    // but we escape properly regardless)
-    static std::string jstr(const std::string& s) {
-        std::string r = "\"";
-        for (unsigned char c : s) {
-            if      (c == '"')  r += "\\\"";
-            else if (c == '\\') r += "\\\\";
-            else if (c == '\n') r += "\\n";
-            else if (c == '\r') r += "\\r";
-            else if (c == '\t') r += "\\t";
-            else if (c < 32)    { char b[8]; snprintf(b, sizeof(b), "\\u%04x", c); r += b; }
-            else r += c;
-        }
-        return r + "\"";
+    // PUT https://kvdb.io/{bucket}/{key}  with raw body
+    bool kv_put(const std::string& key, const std::string& value) {
+        std::string url = "https://kvdb.io/" + bucket_id + "/" + key;
+        std::string resp = run("curl -s -o /dev/null -w '%{http_code}'"
+                               " -X PUT " + sq(url) +
+                               " -d " + sq(value));
+        // kvdb returns 200 on success
+        return resp.find("200") != std::string::npos;
     }
 
-    // Create a new private bin; returns bin ID or "" on failure
-    std::string api_create(const std::string& enc) {
-        std::string body = "{\"d\":" + jstr(enc) + "}";
-        std::string resp = run(
-            "curl -s -X POST https://api.jsonbin.io/v3/b"
-            " -H 'Content-Type: application/json'"
-            " -H 'X-Bin-Private: true'"
-            " -H " + sq("X-Master-Key: " + api_key) +
-            " -d " + sq(body));
-        try {
-            auto v = json::parse(resp);
-            if (v.has("metadata") && v.at("metadata").has("id"))
-                return v.at("metadata").at("id").as_str();
-        } catch (...) {}
-        return "";
-    }
-
-    // Update an existing bin; returns true on success
-    bool api_put(const std::string& id, const std::string& enc) {
-        std::string body = "{\"d\":" + jstr(enc) + "}";
-        std::string resp = run(
-            "curl -s -X PUT " + sq("https://api.jsonbin.io/v3/b/" + id) +
-            " -H 'Content-Type: application/json'"
-            " -H " + sq("X-Master-Key: " + api_key) +
-            " -d " + sq(body));
-        try { auto v = json::parse(resp); return v.has("record"); } catch (...) {}
-        return false;
-    }
-
-    // Fetch latest content of a bin; returns encrypted string or "" on failure
-    std::string api_get(const std::string& id) {
-        std::string resp = run(
-            "curl -s " + sq("https://api.jsonbin.io/v3/b/" + id + "/latest") +
-            " -H " + sq("X-Master-Key: " + api_key));
-        try {
-            auto v = json::parse(resp);
-            if (v.has("record") && v.at("record").has("d"))
-                return v.at("record").at("d").as_str();
-        } catch (...) {}
-        return "";
+    // GET https://kvdb.io/{bucket}/{key}  returns raw body or "" on 404/error
+    std::string kv_get(const std::string& key) {
+        std::string url = "https://kvdb.io/" + bucket_id + "/" + key;
+        // Use -f so curl returns empty + non-zero exit on 4xx/5xx
+        std::string resp = run("curl -sf " + sq(url) + " 2>/dev/null");
+        return resp;
     }
 
     // ── Sync operations ──────────────────────────────────────
 
-    // Show an in-progress message immediately (before the blocking call)
     void progress(const std::string& msg) {
         move(LINES - 3, 0); clrtoeol();
         attron(A_BOLD | COLOR_PAIR(CP_YELLOW));
@@ -198,12 +150,7 @@ class ConsoleApp : public AppBase {
         if (enc.empty()) { flash("Encryption failed (is openssl installed?)"); return false; }
 
         progress("Uploading " + e.label + "...");
-        if (e.bin_id.empty()) {
-            e.bin_id = api_create(enc);
-            if (e.bin_id.empty()) { flash("Create failed — check API key"); return false; }
-        } else {
-            if (!api_put(e.bin_id, enc)) { flash("Upload failed — check API key / network"); return false; }
-        }
+        if (!kv_put(e.label, enc)) { flash("Upload failed — check bucket ID / network"); return false; }
 
         e.last_push = now_iso();
         save_cfg();
@@ -211,19 +158,15 @@ class ConsoleApp : public AppBase {
     }
 
     bool do_pull(SyncEntry& e) {
-        if (e.bin_id.empty()) { flash(e.label + ": no bin yet — push first"); return false; }
-
         progress("Downloading " + e.label + "...");
-        std::string enc = api_get(e.bin_id);
-        if (enc.empty()) { flash("Download failed — check API key / network"); return false; }
+        std::string enc = kv_get(e.label);
+        if (enc.empty()) { flash(e.label + ": not found — push from another machine first"); return false; }
 
         progress("Decrypting " + e.label + "...");
         std::string data = decrypt(enc);
         if (data.empty()) { flash("Decrypt failed (wrong password?)"); return false; }
 
-        // Keep a .bak of whatever was there before
         std::rename(e.file.c_str(), (e.file + ".bak").c_str());
-
         std::ofstream out(e.file);
         if (!out) { flash("Cannot write: " + e.file); return false; }
         out << data;
@@ -265,20 +208,19 @@ class ConsoleApp : public AppBase {
     void draw_body() {
         int y = top_y + 2;
 
-        auto status_badge = [&](bool ok, const char* yes, const char* no) {
-            if (ok) { attron(COLOR_PAIR(CP_DONE));         addstr(yes); attroff(COLOR_PAIR(CP_DONE)); }
-            else    { attron(COLOR_PAIR(CP_PRI_URGENT));   addstr(no);  attroff(COLOR_PAIR(CP_PRI_URGENT)); }
+        auto badge = [&](bool ok, const char* yes, const char* no) {
+            if (ok) { attron(COLOR_PAIR(CP_DONE));       addstr(yes); attroff(COLOR_PAIR(CP_DONE)); }
+            else    { attron(COLOR_PAIR(CP_PRI_URGENT)); addstr(no);  attroff(COLOR_PAIR(CP_PRI_URGENT)); }
         };
 
-        move(y, 2); attron(A_DIM); addstr("API Key:  "); attroff(A_DIM);
-        status_badge(!api_key.empty(), "[configured]", "[not set — press 'k']");
+        move(y, 2); attron(A_DIM); addstr("Bucket ID: "); attroff(A_DIM);
+        badge(!bucket_id.empty(), "[configured]", "[not set — press 'K']");
         ++y;
 
-        move(y, 2); attron(A_DIM); addstr("Password: "); attroff(A_DIM);
-        status_badge(!session_pw.empty(), "[set for session]", "[not set — press 'p']");
+        move(y, 2); attron(A_DIM); addstr("Password:  "); attroff(A_DIM);
+        badge(!session_pw.empty(), "[set for session]", "[not set — press 'p']");
         y += 2;
 
-        // Sync entries
         for (int i = 0; i < (int)entries.size(); ++i) {
             auto& e = entries[i];
             bool sel = (i == cursor);
@@ -287,19 +229,11 @@ class ConsoleApp : public AppBase {
             addch(sel ? '>' : ' ');
             addch(' ');
             attron(A_BOLD); addstr(e.label.c_str()); attroff(A_BOLD);
-            addstr("  ");
 
-            if (e.bin_id.empty()) {
-                attron(A_DIM); addstr("[no bin]"); attroff(A_DIM);
-            } else {
-                attron(A_DIM); addstr(("bin:" + e.bin_id.substr(0, 10) + "..").c_str()); attroff(A_DIM);
-            }
-
-            // Timestamps at a fixed column
             std::string ps = e.last_push.empty() ? "never" : format_short(e.last_push);
             std::string pl = e.last_pull.empty() ? "never" : format_short(e.last_pull);
-            if (COLS > 50) {
-                move(y, 30);
+            if (COLS > 40) {
+                move(y, 10);
                 attron(A_DIM);
                 addstr(("push:" + ps + "  pull:" + pl).c_str());
                 attroff(A_DIM);
@@ -307,14 +241,6 @@ class ConsoleApp : public AppBase {
 
             if (sel) attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
             ++y;
-        }
-
-        // Hint about bin IDs
-        if (!api_key.empty()) {
-            y += 1;
-            move(y, 2); attron(A_DIM);
-            addstr("Tip: copy ~/.tb_console.json to other machines to share bin IDs.");
-            attroff(A_DIM);
         }
     }
 
@@ -325,8 +251,8 @@ public:
     void init() override {
         cfg_path = home(".tb_console.json");
         entries = {
-            {"td", home(".td.json"), "", "", ""},
-            {"pb", home(".pb.json"), "", "", ""},
+            {"td", home(".td.json"), "", ""},
+            {"pb", home(".pb.json"), "", ""},
         };
         load_cfg();
     }
@@ -334,7 +260,7 @@ public:
     void draw() override {
         draw_header();
         draw_body();
-        draw_status_and_hints("u:push-all d:pull-all U:push-sel D:pull-sel K:api-key p:password q:quit");
+        draw_status_and_hints("u:push-all d:pull-all U:push-sel D:pull-sel K:bucket-id p:password q:quit");
     }
 
     bool handle(int ch) override {
@@ -353,8 +279,8 @@ public:
             }
 
             case 'K': {
-                std::string key = text_input("jsonbin.io master key: ", api_key);
-                if (!key.empty()) { api_key = key; save_cfg(); flash("API key saved"); }
+                std::string id = text_input("kvdb.io bucket ID: ", bucket_id);
+                if (!id.empty()) { bucket_id = id; save_cfg(); flash("Bucket ID saved"); }
                 break;
             }
 
@@ -393,7 +319,7 @@ public:
 
 private:
     bool ready() {
-        if (api_key.empty())    { flash("Set API key first (press 'K')"); return false; }
+        if (bucket_id.empty())  { flash("Set bucket ID first (press 'K')"); return false; }
         if (session_pw.empty()) { flash("Set password first (press 'p')"); return false; }
         return true;
     }
