@@ -40,6 +40,7 @@ class PasteApp : public AppBase {
         try {
             auto v = json::parse(content);
             next_id = v.int_or("next_id", 1);
+            snippets.clear();
             if (v.has("snippets") && v.at("snippets").is_arr()) {
                 for (auto& s : v.at("snippets").as_arr()) {
                     Snippet sn;
