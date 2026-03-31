@@ -1050,7 +1050,6 @@ class TdApp : public AppBase {
                 if (cur.is_folder || nxt.is_folder) break;
                 if (!cur.task || !nxt.task) break;
                 if (cur.task->folder != nxt.task->folder) break;
-                if (has_active_filters()) break;
                 push_undo();
                 int idx1 = -1, idx2 = -1;
                 for (int i = 0; i < (int)state.tasks.size(); ++i) {
@@ -1073,7 +1072,6 @@ class TdApp : public AppBase {
                 if (cur.is_folder || prv.is_folder) break;
                 if (!cur.task || !prv.task) break;
                 if (cur.task->folder != prv.task->folder) break;
-                if (has_active_filters()) break;
                 push_undo();
                 int idx1 = -1, idx2 = -1;
                 for (int i = 0; i < (int)state.tasks.size(); ++i) {
